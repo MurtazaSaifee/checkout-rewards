@@ -1053,9 +1053,41 @@ components:
         - COUPON_NOT_OWNED
         - COUPON_ALREADY_REDEEMED
         - PRICE_CHANGED
+    ShortLine:
+      type: object
+      description: A cart line that asks for more units than the stock holds.
+      required:
+        - productId
+        - requested
+        - available
+      properties:
+        productId:
+          type: string
+          example: limited-hoodie
+        requested:
+          type: integer
+          minimum: 1
+          example: 4
+        available:
+          type: integer
+          minimum: 0
+          example: 3
+    FieldError:
+      type: object
+      description: A request field that the contract rejected, with the reason.
+      properties:
+        path:
+          type: string
+          example: /query/colour
+        message:
+          type: string
+          example: must NOT have additional properties
     Problem:
       type: object
-      description: RFC 9457 Problem Details, extended with `code` and `requestId`.
+      description: >-
+        RFC 9457 Problem Details, extended with `code` and `requestId`. The
+        optional members are present only for the codes named in each
+        property.
       required:
         - type
         - title
@@ -1084,6 +1116,22 @@ components:
         requestId:
           type: string
           example: 6f1c2a0e-0b8e-4c53-9a4e-2a8f1d7c9e10
+        shortLines:
+          type: array
+          minItems: 1
+          description: INSUFFICIENT_STOCK only. Each cart line that asks for more units than the stock holds.
+          items:
+            $ref: '#/components/schemas/ShortLine'
+        currentTotalCents:
+          type: integer
+          minimum: 0
+          description: PRICE_CHANGED only. The total at current prices, in cents. Nothing was placed.
+        errors:
+          type: array
+          minItems: 1
+          description: VALIDATION_FAILED only. One entry for each request field that was rejected.
+          items:
+            $ref: '#/components/schemas/FieldError'
       additionalProperties: true
   responses:
     BadRequest:

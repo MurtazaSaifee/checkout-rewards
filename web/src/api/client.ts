@@ -136,8 +136,7 @@ export function currentTotalOf(error: unknown): number | undefined {
   if (!(error instanceof ApiError) || error.problem?.code !== 'PRICE_CHANGED') {
     return undefined;
   }
-  const current: unknown = error.problem['currentTotalCents'];
-  return typeof current === 'number' ? current : undefined;
+  return error.problem.currentTotalCents;
 }
 
 /** A key for one checkout attempt. Built from random bytes, so it works outside a secure context too. */
