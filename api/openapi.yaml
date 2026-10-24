@@ -383,6 +383,40 @@ paths:
           $ref: '#/components/responses/Conflict'
         '500':
           $ref: '#/components/responses/InternalError'
+  /admin/report:
+    get:
+      tags:
+        - admin
+      operationId: getReport
+      summary: Report sales and coupons, calculated from the orders and coupons on every request.
+      description: >-
+        Read-only. Every figure is computed from the placed orders, their lines
+        and the coupons when the request arrives, so nothing is stored and
+        reading the report changes nothing. All money is in integer cents.
+        Net revenue is the sum of the order totals, which equals gross revenue
+        less discounts because each order's total is its subtotal less its
+        discount. Unrewarded milestones are the milestones reached by the
+        order count, less the coupons generated.
+      security:
+        - adminKey: []
+      parameters:
+        - $ref: '#/components/parameters/RequestIdHeader'
+      responses:
+        '200':
+          description: The report, as of the moment the request was read.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Report'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
 components:
   securitySchemes:
     adminKey:
@@ -807,6 +841,88 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/AdminCoupon'
+    UnitsSold:
+      type: object
+      required:
+        - productId
+        - name
+        - quantity
+      additionalProperties: false
+      properties:
+        productId:
+          type: string
+          example: ceramic-mug
+        name:
+          type: string
+          description: The product's current name.
+          example: Ceramic Mug
+        quantity:
+          type: integer
+          minimum: 1
+          description: Units of the product on placed orders.
+          example: 3
+    Report:
+      type: object
+      description: >-
+        Sales and reward figures for the store, calculated on each request.
+        Net revenue equals gross revenue less discounts.
+      required:
+        - orderCount
+        - unitsSold
+        - grossRevenueCents
+        - discountCents
+        - netRevenueCents
+        - couponsGenerated
+        - couponsRedeemed
+        - couponsAvailable
+        - unrewardedMilestones
+      additionalProperties: false
+      properties:
+        orderCount:
+          type: integer
+          minimum: 0
+          description: Number of placed orders.
+          example: 3
+        unitsSold:
+          type: array
+          description: Products with at least one unit on a placed order, in product identifier order.
+          items:
+            $ref: '#/components/schemas/UnitsSold'
+        grossRevenueCents:
+          type: integer
+          minimum: 0
+          description: Sum of the order subtotals, before discounts.
+          example: 7750
+        discountCents:
+          type: integer
+          minimum: 0
+          description: Sum of the order discounts.
+          example: 95
+        netRevenueCents:
+          type: integer
+          minimum: 0
+          description: Sum of the order totals, which is gross revenue less discounts.
+          example: 7655
+        couponsGenerated:
+          type: integer
+          minimum: 0
+          description: Coupons issued so far.
+          example: 1
+        couponsRedeemed:
+          type: integer
+          minimum: 0
+          description: Coupons redeemed by an order.
+          example: 1
+        couponsAvailable:
+          type: integer
+          minimum: 0
+          description: Coupons issued and not yet redeemed.
+          example: 0
+        unrewardedMilestones:
+          type: integer
+          minimum: 0
+          description: Milestones reached by the order count that have no coupon yet.
+          example: 0
     ErrorCode:
       type: string
       description: Stable machine-readable error identifier.
