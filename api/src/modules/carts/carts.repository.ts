@@ -106,6 +106,14 @@ export async function deleteCartLine(
   ]);
 }
 
+/**
+ * Marks the cart as checked out, so no further change is accepted. Runs only
+ * inside the checkout transaction, which already holds the cart lock.
+ */
+export async function markCartCheckedOut(client: PoolClient, cartId: string): Promise<void> {
+  await client.query("UPDATE carts SET status = 'checked_out' WHERE id = $1", [cartId]);
+}
+
 /** The cart's lines with each product's current name and unit price, in product order. */
 export async function selectCartLines(runner: SqlRunner, cartId: string): Promise<CartLineRow[]> {
   const { rows } = await runner.query<CartLineRow>(

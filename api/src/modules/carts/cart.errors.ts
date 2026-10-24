@@ -26,6 +26,18 @@ export class CartAlreadyCheckedOutError extends DomainError {
   }
 }
 
+/** A cart with no lines cannot be checked out: there is nothing to order. */
+export class CartEmptyError extends DomainError {
+  constructor() {
+    super({
+      status: 422,
+      code: 'CART_EMPTY',
+      title: 'Cart is empty',
+      detail: 'The cart has no lines, so there is nothing to order.',
+    });
+  }
+}
+
 export class ProductNotFoundError extends DomainError {
   constructor(productId: string) {
     super({
