@@ -10,20 +10,57 @@ import {
 import { subtotalCents } from '../pricing/pricing.js';
 import { findProduct, takeStock } from '../products/products.repository.js';
 import { type OrderView, loadOrderView } from '../orders/orders.repository.js';
+import { type CheckoutOptions } from './checkout.options.js';
+import { IdempotencyKeyReusedError } from './checkout.errors.js';
+import {
+  claimIdempotencyKey,
+  storeIdempotentResponse,
+} from './idempotency.repository.js';
 import { insertOrder, insertOrderLines, takeNextOrderNumber } from './checkout.repository.js';
+import { requestFingerprint } from './request-fingerprint.js';
 
 export interface CheckoutInput {
   cartId: string;
   customerId: string;
+  idempotencyKey: string;
+  options: CheckoutOptions;
 }
+
+/** What a checkout answers. A replay carries the response of the attempt that placed the order. */
+export interface CheckoutOutcome {
+  /** True when an earlier attempt under the same key placed the order and this answer repeats it. */
+  replayed: boolean;
+  status: number;
+  order: OrderView;
+}
+
+const PLACED_STATUS = 201;
 
 /**
  * Checks out a cart. The whole checkout is one transaction, so it either places
  * the order in full or changes nothing. The steps run in this order, and every
  * step that a later change adds goes between the ones around it.
  */
-export async function checkOut(db: Pool, input: CheckoutInput): Promise<OrderView> {
+export async function checkOut(db: Pool, input: CheckoutInput): Promise<CheckoutOutcome> {
   return withTransaction(db, async (client) => {
+    // Step 1: claim the idempotency key before the cart is locked. A retry of a
+    // checkout that already placed its order is answered from the stored response
+    // here, so it never reaches the cart, which by now reads as checked out. A
+    // concurrent attempt with the same key waits on this claim until the first
+    // attempt commits or rolls back.
+    const fingerprint = requestFingerprint({ cartId: input.cartId, options: input.options });
+    const claim = await claimIdempotencyKey(client, input.customerId, input.idempotencyKey, fingerprint);
+    if (!claim.claimed) {
+      if (claim.fingerprint !== fingerprint) {
+        throw new IdempotencyKeyReusedError();
+      }
+      return {
+        replayed: true,
+        status: claim.response.status,
+        order: JSON.parse(claim.response.bodyJson) as OrderView,
+      };
+    }
+
     // Step 2: lock the cart with the lock every cart edit takes. A missing or
     // foreign cart and a checked-out cart are rejected here. An edit that raced
     // us either committed before this read, so it is in the order, or waits and
@@ -59,7 +96,7 @@ export async function checkOut(db: Pool, input: CheckoutInput): Promise<OrderVie
     // insert, so a checkout that fails above never takes a number.
     const orderNumber = await takeNextOrderNumber(client);
 
-    // Step 8: record the order, its lines and the cart's checkout, then commit.
+    // Step 8: record the order, its lines and the cart's checkout.
     const orderId = await insertOrder(client, {
       orderNumber,
       customerId: input.customerId,
@@ -70,7 +107,14 @@ export async function checkOut(db: Pool, input: CheckoutInput): Promise<OrderVie
     await insertOrderLines(client, orderId, lines);
     await markCartCheckedOut(client, cart.id);
 
-    return loadOrderView(client, orderId);
+    // Step 9: store the response against the key, then commit. The stored text is
+    // the exact body the client receives, so a replay is byte-for-byte the same.
+    const order = await loadOrderView(client, orderId);
+    await storeIdempotentResponse(client, input.customerId, input.idempotencyKey, {
+      status: PLACED_STATUS,
+      bodyJson: JSON.stringify(order),
+    });
+    return { replayed: false, status: PLACED_STATUS, order };
   });
 }
 
