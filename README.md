@@ -2,7 +2,7 @@
 
 A backend for an ecommerce store where customers keep carts and check out, and every nth placed order earns the customer who placed it a single-use discount coupon. The service is a TypeScript API on Postgres, with a small React app for trying it by hand.
 
-The API currently serves the product listing, customers' carts, and checkout with order viewing. The rest of the contract is added to `api/openapi.yaml` as each operation lands, and that file is the authoritative description of every endpoint, status code and error code.
+The API serves the product listing, customers' carts, checkout with order viewing, and coupons. `api/openapi.yaml` is the authoritative description of every endpoint, status code and error code.
 
 ## Quick start
 
@@ -74,8 +74,11 @@ Settings are read once at startup. An invalid value stops the service before it 
 | `LOG_LEVEL` | `info` | One of `fatal`, `error`, `warn`, `info`, `debug`, `trace`, `silent`. |
 | `API_ORIGIN` | `http://localhost:3000` | Web dev server only: where `/api` is forwarded. |
 | `TEST_DATABASE_URL` | `postgres://postgres:postgres@localhost:5432/postgres` | Tests only: server on which per-file test databases are created. |
+| `ADMIN_KEY` | `local-admin-key` | Shared key that administrative requests send in the `X-Admin-Key` header. A public placeholder, not sign-in. |
+| `COUPON_EVERY_N_ORDERS` | `5` | Every nth placed order is a milestone and earns a coupon. A whole number from 1 up to 2147483647. |
+| `COUPON_PERCENT_OFF` | `10` | Percentage off each coupon, a whole number from 1 to 100. |
 
-The defaults are public development credentials. Compose and CI set their own values.
+The defaults are public development values. Compose sets its own `DATABASE_URL` and keeps the defaults for the admin key and coupon settings, so a deployment that others can reach should set its own `ADMIN_KEY`.
 
 ## Contract and executable examples
 
@@ -87,7 +90,7 @@ The defaults are public development credentials. Compose and CI set their own va
   ./api/examples.sh
   ```
 
-  Set `BASE_URL` to target another stack (default `http://localhost:8080/api`). The checkout section takes stock and places orders, so run the script once against a freshly started stack.
+  Set `BASE_URL` to target another stack (default `http://localhost:8080/api`). The checkout and coupon sections take stock and place orders, and the coupon section assumes the default `COUPON_EVERY_N_ORDERS` of 5. Run the script once against a freshly started stack with default settings, and set `ADMIN_KEY` if that stack uses another admin key.
 
 ## Carts and customer identity
 
@@ -102,6 +105,22 @@ A cart line is set to a quantity, not added to. `PUT /api/carts/{cartId}/lines/{
 If any line is short, the response is `409 INSUFFICIENT_STOCK`, and its `shortLines` list every short line with the quantity requested and the quantity available. A failed checkout takes no order number, so numbers run 1, 2, 3 with no gaps. A cart is checked out once: a second attempt, or a change to the cart afterwards, is refused with `CART_ALREADY_CHECKED_OUT`.
 
 An order keeps the names, unit prices and totals it had when it was placed, so later price or name changes do not alter it. `GET /api/orders` lists the calling customer's orders, and `GET /api/orders/{orderId}` returns one. An order that belongs to another customer is reported as `ORDER_NOT_FOUND`, the same as an order that does not exist.
+
+## Coupons
+
+Every nth placed order is a milestone. With the default interval of 5, the fifth, tenth and fifteenth orders are milestones, and each milestone earns its customer one coupon. An administrator generates the coupon, and it is issued to the customer who placed the milestone order.
+
+Generation issues one coupon per call, for the oldest milestone that has none. The response gives the coupon's code, its percentage off and its milestone, the customer it was issued to, and how many reached milestones are still waiting:
+
+```sh
+curl -X POST -H 'X-Admin-Key: local-admin-key' http://localhost:3000/api/admin/coupons
+```
+
+When no reached milestone is waiting, the call is refused with `409 NO_ELIGIBLE_MILESTONE`. The administrator lists every coupon with `GET /api/admin/coupons`, and a customer lists their own with `GET /api/coupons`.
+
+The admin key is a shared placeholder, not sign-in. Anyone who holds it can issue coupons. The web app's administration panel asks for it and keeps it only until the page is reloaded.
+
+Coupons are issued and listed, and they do not expire. Applying a coupon at checkout is not yet supported. Each coupon keeps the percentage that was in force when it was issued.
 
 ## Errors and request identifiers
 
