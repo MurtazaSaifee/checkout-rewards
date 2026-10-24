@@ -266,7 +266,7 @@ The header is claimed, not verified: any caller can send any identifier. The rul
 
 **Why:** Without a lock, both requests read the same count and both try to insert the same milestone. The constraint stops the duplicate, but the losing request then fails with a database error, which a client sees as a server failure. The lock makes the losing request read the new count and return a clear refusal. The constraint stays, because a rule enforced only in application code can be broken by a later change.
 
-**Consequences:** Generation waits for any checkout that is taking an order number, since checkout holds the same row until it commits. The generation transaction is short, so the wait is brief. A violation of the constraint would not be translated into a status code and would surface as an internal error. Normal operation does not reach that path.
+**Consequences:** Generation waits for any checkout that is taking an order number, since checkout holds the same row until it commits. The generation transaction is short, so the wait is brief. If the constraint refuses an insert, the call is answered as `NO_ELIGIBLE_MILESTONE`, because that refusal means another call rewarded the milestone first. Normal operation does not reach that path.
 
 ## Decision: Each generate call issues one coupon, for the oldest open milestone
 

@@ -219,3 +219,26 @@ describe('simultaneous generation', () => {
     );
   });
 });
+
+describe('a milestone rewarded by a row the counter lock did not see', () => {
+  const database = useTestDatabase({ coupons: { everyNOrders: 2 } });
+
+  it('refuses with 409 NO_ELIGIBLE_MILESTONE when the unique milestone constraint rejects the insert', async () => {
+    // Four orders reach milestones 1 and 2. Only the second is recorded, as if another call had
+    // rewarded it between this call's count and its insert. The next call would issue milestone 2.
+    await placeOrder(database.app, 'alice', MUG);
+    await placeOrder(database.app, 'bob', MUG);
+    await placeOrder(database.app, 'alice', MUG);
+    await placeOrder(database.app, 'carol', MUG);
+    await database.pool.query(
+      "INSERT INTO coupons (code, milestone, customer_id, percent_off) VALUES ('WXYZWXYZ23', 2, 'carol', 10)",
+    );
+
+    const response = await generateCoupon(database.app);
+
+    expect(response.status).toBe(409);
+    expect(response.body).toMatchObject({ status: 409, code: 'NO_ELIGIBLE_MILESTONE' });
+    const { coupons } = (await listAllCoupons(database.app)).body as { coupons: AdminCoupon[] };
+    expect(coupons.map((coupon) => coupon.code)).toEqual(['WXYZWXYZ23']);
+  });
+});
