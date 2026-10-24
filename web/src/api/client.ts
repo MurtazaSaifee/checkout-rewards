@@ -6,6 +6,9 @@ export type ProductList = components['schemas']['ProductList'];
 export type Problem = components['schemas']['Problem'];
 export type Cart = components['schemas']['Cart'];
 export type CartLine = components['schemas']['CartLine'];
+export type Order = components['schemas']['Order'];
+export type OrderLine = components['schemas']['OrderLine'];
+export type OrderList = components['schemas']['OrderList'];
 
 /** Thrown for any non-2xx answer. Keeps the full body so the UI can show it raw. */
 export class ApiError extends Error {
@@ -80,6 +83,33 @@ export async function removeCartLine(
     headers: customerHeaders(customerId),
   });
   return readJson<Cart>(response);
+}
+
+/** Places the order for the cart in full, or changes nothing. A refusal comes back as an ApiError. */
+export async function checkOutCart(customerId: string, cartId: string, signal?: AbortSignal): Promise<Order> {
+  const response = await fetch(`${API_BASE}/carts/${cartId}/checkout`, {
+    method: 'POST',
+    headers: customerHeaders(customerId),
+    signal,
+  });
+  return readJson<Order>(response);
+}
+
+/** The calling customer's orders, oldest first. */
+export async function listOrders(customerId: string, signal?: AbortSignal): Promise<OrderList> {
+  const response = await fetch(`${API_BASE}/orders`, {
+    headers: customerHeaders(customerId),
+    signal,
+  });
+  return readJson<OrderList>(response);
+}
+
+export async function getOrder(customerId: string, orderId: string, signal?: AbortSignal): Promise<Order> {
+  const response = await fetch(`${API_BASE}/orders/${orderId}`, {
+    headers: customerHeaders(customerId),
+    signal,
+  });
+  return readJson<Order>(response);
 }
 
 async function readJson<T>(response: Response): Promise<T> {
