@@ -2,6 +2,7 @@ import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Pool } from 'pg';
+import { withTransaction } from './transaction.js';
 
 /** Plain SQL files in api/migrations, applied in filename order. */
 export const MIGRATIONS_DIR = new URL('../../migrations/', import.meta.url);
@@ -25,10 +26,7 @@ export async function applyMigrations(pool: Pool, dir: URL = MIGRATIONS_DIR): Pr
     .filter((name) => MIGRATION_FILE.test(name))
     .sort();
 
-  const client = await pool.connect();
-  const applied: string[] = [];
-  try {
-    await client.query('BEGIN');
+  return withTransaction(pool, async (client) => {
     await client.query('SELECT pg_advisory_xact_lock($1)', [MIGRATION_LOCK_KEY]);
     await client.query(`
       CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -42,6 +40,7 @@ export async function applyMigrations(pool: Pool, dir: URL = MIGRATIONS_DIR): Pr
     );
     const done = new Set(rows.map((row) => row.version));
 
+    const applied: string[] = [];
     for (const file of files) {
       const version = file.replace(/\.sql$/, '');
       if (done.has(version)) continue;
@@ -51,13 +50,6 @@ export async function applyMigrations(pool: Pool, dir: URL = MIGRATIONS_DIR): Pr
       await client.query('INSERT INTO schema_migrations (version) VALUES ($1)', [version]);
       applied.push(version);
     }
-
-    await client.query('COMMIT');
     return applied;
-  } catch (error) {
-    await client.query('ROLLBACK');
-    throw error;
-  } finally {
-    client.release();
-  }
+  });
 }
