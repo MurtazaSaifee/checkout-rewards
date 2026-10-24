@@ -128,7 +128,7 @@ describe('a checkout that fails inside the service', () => {
     const stockBefore = await productStock(database.app);
     const key = randomUUID();
 
-    const failed = await checkOut(database.app, 'alice', cartId, key);
+    const failed = await checkOut(database.app, 'alice', cartId, { idempotencyKey: key });
     const body = failed.body as Problem;
 
     expect(failed.status).toBe(500);
@@ -139,7 +139,7 @@ describe('a checkout that fails inside the service', () => {
     expect((await viewCart(database.app, 'alice', cartId)).body as Cart).toMatchObject({ status: 'open' });
     expect((await listMyOrders(database.app, 'alice')).body).toEqual({ orders: [] });
 
-    const retried = await checkOut(database.app, 'alice', cartId, key);
+    const retried = await checkOut(database.app, 'alice', cartId, { idempotencyKey: key });
 
     // The failed attempt took no order number, so the retry is the first order.
     expect(retried.status).toBe(201);

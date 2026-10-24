@@ -37,7 +37,7 @@ describe('listing every order as the administrator', () => {
     const cart = await createCart(database.app, 'bob');
     expect((await setLine(database.app, 'bob', cart, 'notebook-set', 1)).status).toBe(200);
     const { coupons } = (await listMyCoupons(database.app, 'bob')).body as { coupons: Coupon[] };
-    expect((await checkOut(database.app, 'bob', cart, undefined, undefined, coupons[0]!.code)).status).toBe(201);
+    expect((await checkOut(database.app, 'bob', cart, { couponCode: coupons[0]!.code })).status).toBe(201);
   });
 
   it('lists every order in order-number order, each with its customer, lines and totals', async () => {

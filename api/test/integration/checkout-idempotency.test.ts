@@ -52,7 +52,7 @@ describe('checkout idempotency keys', () => {
     const cartId = await createCart(database.app, 'bad-key');
     await setLine(database.app, 'bad-key', cartId, 'ceramic-mug', 1);
 
-    const response = await checkOut(database.app, 'bad-key', cartId, 'has spaces in it');
+    const response = await checkOut(database.app, 'bad-key', cartId, { idempotencyKey: 'has spaces in it' });
 
     expect(response.status).toBe(400);
     expect(response.body as Problem).toMatchObject({ status: 400, code: 'VALIDATION_FAILED' });
@@ -64,8 +64,8 @@ describe('checkout idempotency keys', () => {
     const bobCart = await createCart(database.app, 'key-bob');
     await setLine(database.app, 'key-bob', bobCart, 'notebook-set', 1);
 
-    const alice = await checkOut(database.app, 'key-alice', aliceCart, 'shared-key');
-    const bob = await checkOut(database.app, 'key-bob', bobCart, 'shared-key');
+    const alice = await checkOut(database.app, 'key-alice', aliceCart, { idempotencyKey: 'shared-key' });
+    const bob = await checkOut(database.app, 'key-bob', bobCart, { idempotencyKey: 'shared-key' });
 
     expect(alice.status).toBe(201);
     expect(bob.status).toBe(201);
@@ -78,8 +78,8 @@ describe('checkout idempotency keys', () => {
     await setLine(database.app, 'replayer', cartId, 'canvas-tote', 1);
     const stockBefore = await stockOf(database.app, 'canvas-tote');
 
-    const first = await checkOut(database.app, 'replayer', cartId, 'replay-key');
-    const retry = await checkOut(database.app, 'replayer', cartId, 'replay-key');
+    const first = await checkOut(database.app, 'replayer', cartId, { idempotencyKey: 'replay-key' });
+    const retry = await checkOut(database.app, 'replayer', cartId, { idempotencyKey: 'replay-key' });
 
     expect(first.status).toBe(201);
     expect(retry.status).toBe(201);
@@ -91,11 +91,11 @@ describe('checkout idempotency keys', () => {
   it('rejects a key reused for a different cart with 422 IDEMPOTENCY_KEY_REUSED, and places no order', async () => {
     const firstCart = await createCart(database.app, 'reuser');
     await setLine(database.app, 'reuser', firstCart, 'ceramic-mug', 1);
-    expect((await checkOut(database.app, 'reuser', firstCart, 'reused-key')).status).toBe(201);
+    expect((await checkOut(database.app, 'reuser', firstCart, { idempotencyKey: 'reused-key' })).status).toBe(201);
 
     const secondCart = await createCart(database.app, 'reuser');
     await setLine(database.app, 'reuser', secondCart, 'notebook-set', 1);
-    const response = await checkOut(database.app, 'reuser', secondCart, 'reused-key');
+    const response = await checkOut(database.app, 'reuser', secondCart, { idempotencyKey: 'reused-key' });
     const cart = (await viewCart(database.app, 'reuser', secondCart)).body as Cart;
 
     expect(response.status).toBe(422);
@@ -116,9 +116,9 @@ describe('checkout idempotency keys', () => {
       await holder.query('BEGIN');
       await holder.query('SELECT id FROM carts WHERE id = $1 FOR UPDATE', [cartId]);
 
-      const firstAttempt = checkOut(database.app, 'waiter', cartId, 'running-key');
+      const firstAttempt = checkOut(database.app, 'waiter', cartId, { idempotencyKey: 'running-key' });
       let retryFinished = false;
-      const retry = checkOut(database.app, 'waiter', cartId, 'running-key').then((response) => {
+      const retry = checkOut(database.app, 'waiter', cartId, { idempotencyKey: 'running-key' }).then((response) => {
         retryFinished = true;
         return response;
       });
@@ -148,7 +148,7 @@ describe('checkout idempotency keys', () => {
     const stockBefore = await stockOf(database.app, 'enamel-bottle');
 
     const responses = await Promise.all(
-      Array.from({ length: 10 }, () => checkOut(database.app, 'ten-way', cartId, 'ten-way-key')),
+      Array.from({ length: 10 }, () => checkOut(database.app, 'ten-way', cartId, { idempotencyKey: 'ten-way-key' })),
     );
 
     expect(responses.map((response) => response.status)).toEqual(Array<number>(10).fill(201));
@@ -160,12 +160,12 @@ describe('checkout idempotency keys', () => {
   it('leaves no record of a checkout that failed for an empty cart, so the same key is evaluated again after a fix', async () => {
     const cartId = await createCart(database.app, 'empty-retrier');
 
-    const refused = await checkOut(database.app, 'empty-retrier', cartId, 'empty-key');
+    const refused = await checkOut(database.app, 'empty-retrier', cartId, { idempotencyKey: 'empty-key' });
     expect(refused.status).toBe(422);
     expect(refused.body).toMatchObject({ code: 'CART_EMPTY' });
 
     await setLine(database.app, 'empty-retrier', cartId, 'ceramic-mug', 1);
-    const retry = await checkOut(database.app, 'empty-retrier', cartId, 'empty-key');
+    const retry = await checkOut(database.app, 'empty-retrier', cartId, { idempotencyKey: 'empty-key' });
 
     expect(retry.status).toBe(201);
   });
@@ -178,13 +178,13 @@ describe('checkout idempotency keys', () => {
     await setLine(database.app, 'stock-rival', rivalCart, 'limited-hoodie', 2);
     expect((await checkOut(database.app, 'stock-rival', rivalCart)).status).toBe(201);
 
-    const refused = await checkOut(database.app, 'stock-retrier', cartId, 'stock-key');
+    const refused = await checkOut(database.app, 'stock-retrier', cartId, { idempotencyKey: 'stock-key' });
     expect(refused.status).toBe(409);
     expect(refused.body).toMatchObject({ code: 'INSUFFICIENT_STOCK' });
 
     // Restocking is an arrangement made directly in the database, as the README describes.
     await database.pool.query("UPDATE products SET stock = stock + 5 WHERE id = 'limited-hoodie'");
-    const retry = await checkOut(database.app, 'stock-retrier', cartId, 'stock-key');
+    const retry = await checkOut(database.app, 'stock-retrier', cartId, { idempotencyKey: 'stock-key' });
 
     expect(retry.status).toBe(201);
   });
@@ -192,9 +192,9 @@ describe('checkout idempotency keys', () => {
   it('refuses a new key on a cart that is already checked out with 409 CART_ALREADY_CHECKED_OUT', async () => {
     const cartId = await createCart(database.app, 'once-only');
     await setLine(database.app, 'once-only', cartId, 'canvas-tote', 1);
-    expect((await checkOut(database.app, 'once-only', cartId, 'first-attempt')).status).toBe(201);
+    expect((await checkOut(database.app, 'once-only', cartId, { idempotencyKey: 'first-attempt' })).status).toBe(201);
 
-    const second = await checkOut(database.app, 'once-only', cartId, 'second-attempt');
+    const second = await checkOut(database.app, 'once-only', cartId, { idempotencyKey: 'second-attempt' });
 
     expect(second.status).toBe(409);
     expect(second.body).toMatchObject({ status: 409, code: 'CART_ALREADY_CHECKED_OUT' });
