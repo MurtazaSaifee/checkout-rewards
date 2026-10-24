@@ -233,6 +233,90 @@ assert_body '.coupons == []'
 check 200 "The administrator lists all coupons" "${ADMIN[@]}" "$BASE_URL/admin/coupons"
 assert_body --arg code "$COUPON" '[.coupons[] | select(.code == $code) | .customerId] == ["example-grace"]'
 
+# Redeeming a coupon at checkout. The checkout body names the coupon by its code. The discount is the
+# coupon's percentage of the subtotal, rounded down to a whole cent and taken once. The order records the
+# coupon, its percentage, the discount and a total of the subtotal less the discount. Grace's coupon is
+# used in order: a declined payment first, then two checkouts at the same moment, then the refusals.
+check 201 "Grace creates a cart for the coupon" -X POST "${GRACE[@]}" "$BASE_URL/carts"
+GRACE_CART="$(printf '%s' "$LAST_BODY" | jq -r '.id')"
+check 200 "Grace sets one notebook set" \
+  -X PUT "${GRACE[@]}" "${JSON_TYPE[@]}" --data '{"quantity":1}' "$BASE_URL/carts/$GRACE_CART/lines/notebook-set"
+
+# A declined payment places nothing, so it leaves the coupon unredeemed.
+check 402 "Grace's payment is declined, with her coupon" \
+  -X POST "${GRACE[@]}" "${JSON_TYPE[@]}" -H "$(idem grace-decline)" \
+  --data "{\"paymentToken\":\"tok_decline\",\"couponCode\":\"$COUPON\"}" \
+  "$BASE_URL/carts/$GRACE_CART/checkout"
+check 200 "Grace's coupon is still unredeemed after the decline" -X GET "${GRACE[@]}" "$BASE_URL/coupons"
+assert_body --arg code "$COUPON" '.coupons[] | select(.code == $code) | .redeemed == false'
+
+# Two carts of Grace's check out with the coupon at the same moment. One places the order, with the
+# discount. The other is refused, and its cart stays open.
+check 201 "Grace creates the first race cart" -X POST "${GRACE[@]}" "$BASE_URL/carts"
+RACE_A="$(printf '%s' "$LAST_BODY" | jq -r '.id')"
+check 200 "Grace sets one notebook set in it" \
+  -X PUT "${GRACE[@]}" "${JSON_TYPE[@]}" --data '{"quantity":1}' "$BASE_URL/carts/$RACE_A/lines/notebook-set"
+check 201 "Grace creates the second race cart" -X POST "${GRACE[@]}" "$BASE_URL/carts"
+RACE_B="$(printf '%s' "$LAST_BODY" | jq -r '.id')"
+check 200 "Grace sets one notebook set in it" \
+  -X PUT "${GRACE[@]}" "${JSON_TYPE[@]}" --data '{"quantity":1}' "$BASE_URL/carts/$RACE_B/lines/notebook-set"
+
+RACE_DIR="$(mktemp -d)"
+trap 'rm -rf "$RACE_DIR"' EXIT
+
+# fire_coupon_checkout CART_ID KEY_NAME: sends the checkout with the coupon, keeping the status and body.
+fire_coupon_checkout() {
+  curl -sS -o "$RACE_DIR/$1.body" -w '%{http_code}' -X POST "${GRACE[@]}" "${JSON_TYPE[@]}" \
+    -H "$(idem "$2")" --data "{\"paymentToken\":\"tok_ok\",\"couponCode\":\"$COUPON\"}" \
+    "$BASE_URL/carts/$1/checkout" > "$RACE_DIR/$1.status"
+}
+
+printf '\n== Both checkouts name the coupon at the same moment\n'
+fire_coupon_checkout "$RACE_A" grace-race-a &
+fire_coupon_checkout "$RACE_B" grace-race-b &
+wait
+
+WINNER=''
+LOSER=''
+for cart in "$RACE_A" "$RACE_B"; do
+  status="$(cat "$RACE_DIR/$cart.status")"
+  printf '\n== Checkout from cart %s → HTTP %s\n' "$cart" "$status"
+  jq . "$RACE_DIR/$cart.body"
+  if [[ "$status" == 201 ]]; then WINNER="$cart"; else LOSER="$cart"; fi
+done
+if [[ -z "$WINNER" || -z "$LOSER" || "$(cat "$RACE_DIR/$LOSER.status")" != 422 ]]; then
+  printf 'Expected one checkout placed (201) and one refused (422)\n' >&2
+  exit 1
+fi
+
+LAST_BODY="$(cat "$RACE_DIR/$WINNER.body")"
+assert_body --arg code "$COUPON" \
+  '.couponCode == $code and .couponPercentOff == 10 and .discountCents == ((.subtotalCents * 10 / 100) | floor) and .totalCents == (.subtotalCents - .discountCents)'
+LAST_BODY="$(cat "$RACE_DIR/$LOSER.body")"
+assert_body '.code == "COUPON_ALREADY_REDEEMED"'
+check 200 "The refused race cart is still open" -X GET "${GRACE[@]}" "$BASE_URL/carts/$LOSER"
+assert_body '.status == "open"'
+
+# The coupon is spent, so the cart that declined can no longer use it.
+check 422 "Grace's other cart cannot use the coupon again" \
+  -X POST "${GRACE[@]}" "${JSON_TYPE[@]}" -H "$(idem grace-again)" --data "{\"couponCode\":\"$COUPON\"}" \
+  "$BASE_URL/carts/$GRACE_CART/checkout"
+assert_body '.code == "COUPON_ALREADY_REDEEMED"'
+
+# A coupon belongs to the customer it was issued to, and a code that is not issued is not a coupon.
+check 201 "Carol creates a cart to try Grace's coupon" -X POST "${CAROL[@]}" "$BASE_URL/carts"
+CAROL_COUPON_CART="$(printf '%s' "$LAST_BODY" | jq -r '.id')"
+check 200 "Carol sets one notebook set" \
+  -X PUT "${CAROL[@]}" "${JSON_TYPE[@]}" --data '{"quantity":1}' "$BASE_URL/carts/$CAROL_COUPON_CART/lines/notebook-set"
+check 422 "Carol cannot redeem Grace's coupon" \
+  -X POST "${CAROL[@]}" "${JSON_TYPE[@]}" -H "$(idem carol-coupon)" --data "{\"couponCode\":\"$COUPON\"}" \
+  "$BASE_URL/carts/$CAROL_COUPON_CART/checkout"
+assert_body '.code == "COUPON_NOT_OWNED"'
+check 422 "An unknown coupon code is refused" \
+  -X POST "${CAROL[@]}" "${JSON_TYPE[@]}" -H "$(idem carol-unknown)" --data '{"couponCode":"NOSUCHCODE"}' \
+  "$BASE_URL/carts/$CAROL_COUPON_CART/checkout"
+assert_body '.code == "COUPON_NOT_FOUND"'
+
 # Idempotency. A client that times out can retry a checkout with the same key and
 # the same request, and gets the original answer back, not a second order.
 ERIN=(-H 'X-Customer-Id: example-erin')

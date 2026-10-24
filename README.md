@@ -120,7 +120,7 @@ Every checkout request must send an `Idempotency-Key` header, 1 to 128 letters, 
 
 If any line is short, the response is `409 INSUFFICIENT_STOCK`, and its `shortLines` list every short line with the quantity requested and the quantity available. A failed checkout takes no order number, so numbers run 1, 2, 3 with no gaps.
 
-The checkout body may also carry `expectedTotalCents`, the total the customer saw. When the total at current prices differs from it, the checkout is refused with `409 PRICE_CHANGED`, and `currentTotalCents` gives the total now. Nothing is placed, and the cart stays open, so the same cart can be checked out again at the new total. Leave the field out to check out at current prices. The web app sends the subtotal its cart view shows. A cart is checked out once: a second attempt, or a change to the cart afterwards, is refused with `CART_ALREADY_CHECKED_OUT`.
+The checkout body may also carry `expectedTotalCents`, the total the customer saw. When the total at current prices differs from it, the checkout is refused with `409 PRICE_CHANGED`, and `currentTotalCents` gives the total now. Nothing is placed, and the cart stays open, so the same cart can be checked out again at the new total. Leave the field out to check out at current prices. The web app sends the total its cart view shows, less the discount when a coupon is named. A cart is checked out once: a second attempt, or a change to the cart afterwards, is refused with `CART_ALREADY_CHECKED_OUT`.
 
 The checkout body may name a `paymentToken`. `tok_ok`, the default, approves the charge, and `tok_decline` declines it, which is answered `402 PAYMENT_DECLINED`. The payment gateway is an in-process fake that moves no money, so the token alone decides the outcome. A declined checkout changes nothing, like any refused checkout: stock, the cart and the order numbers are as they were, and the same cart can be checked out again.
 
@@ -140,7 +140,24 @@ When no reached milestone is waiting, the call is refused with `409 NO_ELIGIBLE_
 
 The admin key is a shared placeholder, not sign-in. Anyone who holds it can issue coupons. The web app's administration panel asks for it and keeps it only until the page is reloaded.
 
-Coupons are issued and listed, and they do not expire. Applying a coupon at checkout is not yet supported. Each coupon keeps the percentage that was in force when it was issued.
+Coupons are issued and listed, and they do not expire. Each coupon keeps the percentage that was in force when it was issued.
+
+### Applying a coupon at checkout
+
+The checkout body may name one of the customer's coupons by its code, in `couponCode`. The discount is the coupon's percentage of the subtotal, rounded down to a whole cent and taken once. Amounts are whole cents throughout, so 10% of 1,995 cents is 199 cents, and the total is the subtotal less the discount. The order records the coupon's code and percentage, the discount and the total. A checkout takes at most one coupon.
+
+The discount is worked out on the subtotal, not line by line, so two lines of 995 cents at 10% give a discount of 199 cents. A checkout that also sends `expectedTotalCents` is checked against the discounted total, which is the total the customer sees.
+
+```sh
+curl -X POST -H 'X-Customer-Id: alice' -H "Idempotency-Key: $(uuidgen)" -H 'Content-Type: application/json' \
+  --data "{\"couponCode\":\"$COUPON\"}" http://localhost:3000/api/carts/$CART_ID/checkout
+```
+
+A coupon that is not the customer's is refused. `COUPON_NOT_FOUND` means no coupon has the code, and `COUPON_NOT_OWNED` means it was issued to another customer. A coupon that is already on an order is refused with `COUPON_ALREADY_REDEEMED`. Each of these is `422`, and nothing is placed.
+
+A coupon is redeemed only by a placed order. A checkout that fails for any reason, including a declined payment, leaves the coupon unredeemed. When two checkouts name the same coupon at the same moment, one places its order and the other is refused with `COUPON_ALREADY_REDEEMED`, and its cart stays open.
+
+The web app has a coupon field at checkout, and shows the coupon and discount on the order. Its race tool redeems one of the customer's coupons from several carts at once and summarises the outcomes.
 
 ## Errors and request identifiers
 

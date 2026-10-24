@@ -8,6 +8,8 @@ export function CartPanel({ cart }: { cart: CartController }) {
   const { state, editError, checkoutError } = cart;
   // The tester's choice of gateway answer for the next checkout. Approval is the default.
   const [paymentToken, setPaymentToken] = useState<PaymentToken>('tok_ok');
+  // The coupon to redeem with the next checkout. Blank means no coupon.
+  const [couponCode, setCouponCode] = useState('');
   // The new total, when the last checkout was refused because the prices changed.
   const newTotal = currentTotalOf(checkoutError);
 
@@ -33,11 +35,24 @@ export function CartPanel({ cart }: { cart: CartController }) {
                   <option value="tok_decline">Decline (tok_decline)</option>
                 </select>
               </label>{' '}
+              <label>
+                Coupon code{' '}
+                <input
+                  type="text"
+                  value={couponCode}
+                  placeholder="optional"
+                  size={12}
+                  onChange={(event) => {
+                    setCouponCode(event.target.value);
+                  }}
+                />
+              </label>{' '}
               <button
                 type="button"
                 disabled={state.cart.status !== 'open' || state.cart.lines.length === 0}
                 onClick={() => {
-                  cart.checkOut(paymentToken);
+                  const code = couponCode.trim();
+                  cart.checkOut(paymentToken, code === '' ? undefined : code);
                 }}
               >
                 Check out

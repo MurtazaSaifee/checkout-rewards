@@ -26,16 +26,29 @@ export interface NewOrder {
   customerId: string;
   cartId: string;
   subtotalCents: number;
+  /** The coupon the order redeems, with the percentage it takes off. Both are null when no coupon is used. */
+  coupon: { code: string; percentOff: number } | null;
+  discountCents: number;
   totalCents: number;
 }
 
 /** Inserts the order head and returns its identifier. */
 export async function insertOrder(client: PoolClient, order: NewOrder): Promise<string> {
   const { rows } = await client.query<{ id: string }>(
-    `INSERT INTO orders (order_number, customer_id, cart_id, subtotal_cents, total_cents)
-     VALUES ($1, $2, $3, $4, $5)
+    `INSERT INTO orders (order_number, customer_id, cart_id, subtotal_cents,
+                         coupon_code, coupon_percent_off, discount_cents, total_cents)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
      RETURNING id`,
-    [order.orderNumber, order.customerId, order.cartId, order.subtotalCents, order.totalCents],
+    [
+      order.orderNumber,
+      order.customerId,
+      order.cartId,
+      order.subtotalCents,
+      order.coupon?.code ?? null,
+      order.coupon?.percentOff ?? null,
+      order.discountCents,
+      order.totalCents,
+    ],
   );
   const [row] = rows;
   if (row === undefined) {

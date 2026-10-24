@@ -47,6 +47,9 @@ export interface Order {
   placedAt: string;
   lines: OrderLine[];
   subtotalCents: number;
+  couponCode: string | null;
+  couponPercentOff: number | null;
+  discountCents: number;
   totalCents: number;
 }
 

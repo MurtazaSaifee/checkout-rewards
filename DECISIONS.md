@@ -345,7 +345,73 @@ The header is claimed, not verified: any caller can send any identifier. The rul
 
 **Why:** Random codes cannot be enumerated and reveal nothing about volume. Leaving out look-alike characters means a code copied by hand is less likely to be mistyped. Ten characters from 31 gives about 8 × 10^14 codes, far more than the milestones will ever produce. `crypto.randomInt` draws without modulo bias, unlike a plain modulo of random bytes.
 
-**Consequences:** A code works for whoever presents it, so it is a bearer value. The service does not redeem coupons yet. The table already records which order redeemed a coupon, and redemption must check the owner as well as the code.
+**Consequences:** A code works for whoever presents it, so it is a bearer value. Redemption checks the owner as well as the code, so a customer who learns another customer's code still cannot spend it.
+
+## Decision: Money is whole cents, and a discount rounds down once on the subtotal
+
+**Context:** Prices, totals and discounts are money, and a percentage of a price is often a fraction of a cent: 10% of 1,995 cents is 199.5. A binary floating-point amount can drift from the exact figure, so a total built from floats can differ by a cent from the one the customer was shown. A discount can also be worked out per line or on the subtotal, and the two round differently.
+
+**Options considered:**
+
+1. Floating-point amounts in dollars, rounded for display.
+2. A decimal library for amounts.
+3. Integer cents, with the discount computed in integers as `floor(subtotal × percentage / 100)` and taken once on the subtotal.
+4. Integer cents, with the discount computed and rounded on each line.
+
+**Choice:** Option 3. The discount is worked out from the subtotal, not from each line, and the total is the subtotal less the discount. Percentages are whole numbers from 0 to 100, so the total is never negative. Two lines of 995 cents at 10% give a subtotal of 1,990 and a discount of 199. Per-line rounding would give 198.
+
+**Why:** Integer cents hold every amount exactly, so the stored total is the total shown. Rounding down means the discount never exceeds the exact percentage, so the store does not give away a fraction of a cent it was not asked to give. Rounding once on the subtotal gives one figure per order, which the customer can check against the cart. Rounding per line would make the discount depend on how the same items are split across lines.
+
+**Consequences:** The discount can be up to one cent below the exact percentage, and that is the rule, not an error. The web app works out the same discount so that it can send the total the customer saw, so the rule lives in two places, and a change to one must be made to the other. The database checks that every order's total equals its subtotal less its discount.
+
+## Decision: A checkout takes at most one coupon
+
+**Context:** A customer may hold several coupons, and applying several to one order would be a natural extension. Each coupon changes the amount, so several would need an order of application and a rule for how they combine.
+
+**Options considered:**
+
+1. Several coupons per checkout, each taking its percentage of the subtotal.
+2. Several coupons per checkout, applied one after another, each taking its percentage of what the previous one left.
+3. At most one coupon per checkout.
+
+**Choice:** Option 3. The checkout body takes one `couponCode`, and the order records one code and one percentage.
+
+**Why:** With one coupon the amount is one calculation: the subtotal, less its percentage, rounded down once. Two coupons on one subtotal would need a rule for how their percentages combine, and stacking them would make the total depend on the order of application. Neither is needed to reward a purchase, and the record stays simple: one code, one percentage and one discount.
+
+**Consequences:** A customer with two coupons uses one per order, and the other waits for a later order. Supporting several coupons later would need a change to the order record, which holds one code and one percentage, and a decision on how they combine.
+
+## Decision: A coupon is locked while it is redeemed, and a constraint backs the lock up
+
+**Context:** A coupon is single-use. Two checkouts from one customer that name the same coupon at the same moment must not both redeem it. A check followed by a write is racy: each checkout can read the coupon as unredeemed before either one writes.
+
+**Options considered:**
+
+1. Check the coupon's redeemed field, then write it. Both checkouts can pass the check.
+2. Lock the coupon's row with `SELECT ... FOR UPDATE` in the checkout transaction, so that a second checkout waits for the first and then reads the redemption.
+3. Enforce one redemption with a unique constraint alone, and let the losing checkout fail with a constraint error.
+4. Both 2 and 3: the lock gives a clean refusal, and a unique constraint makes a second order for the same coupon impossible even if the lock were removed.
+
+**Choice:** Option 4. The checkout locks the coupon's row, checks its owner and whether it is redeemed, and refuses with the matching code. A unique constraint on the coupon code of the orders table stops a second order for the same coupon, and the checkout turns a violation of that constraint into `COUPON_ALREADY_REDEEMED`.
+
+**Why:** The lock makes the refusal clean. Under the database's default isolation, a checkout that waits on the lock reads the row again after the first checkout commits, so it sees the redemption and refuses with the coupon's own error, before it takes stock or reaches the insert. The constraint is needed as well. A unique constraint on the coupon's redeemed-by field stops two coupons from naming one order, but it does nothing to stop two orders from naming one coupon. The constraint that holds the rule is therefore on the order's coupon code.
+
+**Consequences:** A second checkout for the same coupon waits while the first runs, so a slow checkout delays the others that name the same coupon. The lock ends when the checkout commits or rolls back. The constraint is the last line of defence: if the lock were ever removed, the rule would still hold, though the losing checkout would then fail with a database error that the service has to translate.
+
+## Decision: A coupon is redeemed only by a placed order
+
+**Context:** A checkout can fail after it has named a coupon: a short line, a changed price, or a declined payment. If the coupon were marked as spent when the checkout began, a failed checkout would spend it, and the customer would lose the reward for a purchase that never happened.
+
+**Options considered:**
+
+1. Mark the coupon when the checkout begins, and clear the mark if the checkout fails.
+2. Mark the coupon in its own committed transaction before the charge.
+3. Mark the coupon inside the checkout transaction, together with the order, after the charge is approved.
+
+**Choice:** Option 3. The coupon is checked and locked when the discount is applied, but nothing is recorded there. The redemption is written in the step that records the order, which runs only after the charge is approved.
+
+**Why:** The checkout is one transaction, so a mark written inside it commits with the order or disappears with the rollback. A declined payment throws before the order is written, so nothing is marked, and the customer can try again with the same coupon and another payment outcome. Option 1 depends on a second write succeeding on the failure path, and that write may be the one that cannot succeed. Option 2 can leave a coupon spent when a crash falls between the two commits, with no order to show for it.
+
+**Consequences:** A checkout that fails leaves its coupon unredeemed, and the same cart can use the coupon again. This relies on the payment gateway being in-process, so that a rollback also undoes the charge. A real provider's charge cannot be rolled back, so with one, a failure after the charge would have to reverse it. The decision on charging inside the checkout transaction describes that case.
 
 ## Decision: Checkout retries are safe through an idempotency key
 

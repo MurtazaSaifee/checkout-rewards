@@ -7,10 +7,13 @@ import {
   markCartCheckedOut,
   selectCartLines,
 } from '../carts/carts.repository.js';
-import { subtotalCents } from '../pricing/pricing.js';
+import { priceOrder } from '../pricing/pricing.js';
 import { findProduct, takeStock } from '../products/products.repository.js';
 import { type OrderView, loadOrderView } from '../orders/orders.repository.js';
 import { type PaymentGateway } from '../payments/payment-gateway.js';
+import { CouponAlreadyRedeemedError } from '../coupons/coupon.errors.js';
+import { markCouponRedeemed } from '../coupons/coupons.repository.js';
+import { lockRedeemableCoupon } from '../coupons/coupons.service.js';
 import { type CheckoutOptions } from './checkout.options.js';
 import { IdempotencyKeyReusedError, PaymentDeclinedError, PriceChangedError } from './checkout.errors.js';
 import {
@@ -36,6 +39,21 @@ export interface CheckoutOutcome {
 }
 
 const PLACED_STATUS = 201;
+
+/** Postgres's unique violation, and the name of the constraint that lets each coupon appear on one order only. */
+const UNIQUE_VIOLATION = '23505';
+const ORDER_COUPON_CONSTRAINT = 'orders_coupon_code_key';
+
+/** True only for the one-order-per-coupon constraint, so any other failure still surfaces as an error. */
+function isCouponAlreadyOrdered(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    'code' in error &&
+    error.code === UNIQUE_VIOLATION &&
+    'constraint' in error &&
+    error.constraint === ORDER_COUPON_CONSTRAINT
+  );
+}
 
 /**
  * Checks out a cart. The whole checkout is one transaction, so it either places
@@ -76,9 +94,9 @@ export async function checkOut(
       throw new CartEmptyError();
     }
 
-    // Step 3: price the lines at current prices. Prices are read in this
-    // transaction, and the order keeps exactly what was read.
-    const subtotal = subtotalCents(lines);
+    // Step 3: the lines carry current prices, read in this transaction, and the
+    // order keeps exactly what was read. The amounts are worked out once the
+    // coupon is known, at step 5.
 
     // Step 4: take stock, one conditional update per line, in product order. The
     // lines come back ordered by product, so concurrent checkouts lock products
@@ -96,25 +114,32 @@ export async function checkOut(
       throw new InsufficientStockError(shortLines);
     }
 
-    // Step 5: the coupon discount. There is none yet, so the final total is the
-    // subtotal. A discount lowers this figure before the price guard below reads it.
-    const total = subtotal;
+    // Step 5: redeem the coupon, if one was named. Its row is locked until this
+    // transaction ends, so a concurrent checkout that names it waits here and then
+    // sees the redemption. Nothing is recorded yet. The redemption is written at
+    // step 8, with the order, so a checkout that fails before then leaves the
+    // coupon unredeemed. The discount is taken once, on the subtotal.
+    const coupon =
+      input.options.couponCode === undefined
+        ? undefined
+        : await lockRedeemableCoupon(client, input.options.couponCode, input.customerId);
+    const amounts = priceOrder(lines, coupon?.percentOff);
 
     // The price guard sits after the discount, because the expected total is the
     // total the customer saw, which is the discounted one when a coupon applies. It
     // sits before the charge, so a changed price is never charged. A refusal throws
     // here, and the rollback returns the stock taken above and frees the claimed key.
-    if (input.options.expectedTotalCents !== undefined && input.options.expectedTotalCents !== total) {
-      throw new PriceChangedError(total);
+    if (input.options.expectedTotalCents !== undefined && input.options.expectedTotalCents !== amounts.totalCents) {
+      throw new PriceChangedError(amounts.totalCents);
     }
 
     // Step 6: charge the total through the payment gateway, inside the transaction.
-    // A decline throws, so the stock taken above and the claimed key roll back with
-    // it. Nothing has been placed yet, so a retry with another token starts clean.
-    // This holds only because the gateway is in-process: a real provider's charge
-    // cannot be undone by a rollback.
+    // A decline throws, so the stock taken above, the coupon and the claimed key
+    // roll back with it. Nothing has been placed yet, so a retry with another token
+    // starts clean. This holds only because the gateway is in-process: a real
+    // provider's charge cannot be undone by a rollback.
     const charge = await payments.charge({
-      amountCents: total,
+      amountCents: amounts.totalCents,
       paymentToken: input.options.paymentToken,
     });
     if (charge === 'declined') {
@@ -125,14 +150,30 @@ export async function checkOut(
     // insert, so a checkout that fails above never takes a number.
     const orderNumber = await takeNextOrderNumber(client);
 
-    // Step 8: record the order, its lines and the cart's checkout.
-    const orderId = await insertOrder(client, {
-      orderNumber,
-      customerId: input.customerId,
-      cartId: cart.id,
-      subtotalCents: subtotal,
-      totalCents: total,
-    });
+    // Step 8: record the order, its lines, the coupon's redemption and the cart's
+    // checkout. The unique constraint on the order's coupon code refuses a second
+    // order for the coupon. The row lock above normally stops that from happening,
+    // so the constraint is the backstop that keeps the rule true without the lock.
+    let orderId: string;
+    try {
+      orderId = await insertOrder(client, {
+        orderNumber,
+        customerId: input.customerId,
+        cartId: cart.id,
+        subtotalCents: amounts.subtotalCents,
+        coupon: coupon === undefined ? null : { code: coupon.code, percentOff: coupon.percentOff },
+        discountCents: amounts.discountCents,
+        totalCents: amounts.totalCents,
+      });
+    } catch (error) {
+      if (coupon !== undefined && isCouponAlreadyOrdered(error)) {
+        throw new CouponAlreadyRedeemedError();
+      }
+      throw error;
+    }
+    if (coupon !== undefined) {
+      await markCouponRedeemed(client, coupon.code, orderId);
+    }
     await insertOrderLines(client, orderId, lines);
     await markCartCheckedOut(client, cart.id);
 

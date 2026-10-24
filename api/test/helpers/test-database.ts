@@ -7,6 +7,7 @@ import { DEFAULT_COUPON_RULES, type CouponRules } from '../../src/config.js';
 import { bootstrapDatabase } from '../../src/db/bootstrap.js';
 import { createLogger, type Logger } from '../../src/logging.js';
 import { FakePaymentGateway } from '../../src/modules/payments/fake-payment-gateway.js';
+import type { PaymentGateway } from '../../src/modules/payments/payment-gateway.js';
 
 /**
  * Admin connection used to create and drop per-file databases. CI points this
@@ -22,6 +23,8 @@ export interface TestDatabaseOptions {
   logger?: Logger;
   /** Overrides the coupon rules for this test file, for example n = 2 to reach milestones quickly. */
   coupons?: Partial<CouponRules>;
+  /** Replaces the fake payment gateway, for a test that needs to see what is charged. */
+  payments?: PaymentGateway;
 }
 
 interface TestDatabaseState {
@@ -56,7 +59,7 @@ export function useTestDatabase(options: TestDatabaseOptions = {}): {
     state.app = createApp({
       db: state.pool,
       logger: options.logger ?? createLogger({ level: 'silent' }),
-      payments: new FakePaymentGateway(),
+      payments: options.payments ?? new FakePaymentGateway(),
       adminKey: TEST_ADMIN_KEY,
       coupons: { ...DEFAULT_COUPON_RULES, ...options.coupons },
     });
