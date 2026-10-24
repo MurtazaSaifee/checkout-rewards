@@ -1,3 +1,4 @@
+import { singleRow } from '../../db/rows.js';
 import type { SqlRunner } from '../../db/transaction.js';
 
 /** Order count and the money totals over every placed order, in cents. */
@@ -47,10 +48,7 @@ export async function readOrderTotals(runner: SqlRunner): Promise<OrderTotals> {
             coalesce(sum(total_cents), 0)      AS "netRevenueCents"
        FROM orders`,
   );
-  const [row] = rows;
-  if (row === undefined) {
-    throw new Error('the order totals query produced no row');
-  }
+  const row = singleRow(rows, 'the order totals query produced no row');
   return {
     orderCount: row.orderCount,
     grossRevenueCents: wholeNumber(row.grossRevenueCents),
@@ -82,9 +80,6 @@ export async function readCouponCounts(runner: SqlRunner): Promise<CouponCounts>
             count(redeemed_by_order_id)::int    AS redeemed
        FROM coupons`,
   );
-  const [row] = rows;
-  if (row === undefined) {
-    throw new Error('the coupon counts query produced no row');
-  }
+  const row = singleRow(rows, 'the coupon counts query produced no row');
   return row;
 }

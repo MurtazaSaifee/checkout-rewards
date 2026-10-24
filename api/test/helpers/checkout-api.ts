@@ -6,27 +6,27 @@ import type { Order } from './api-types.js';
 
 /** Thin wrappers over the checkout and order endpoints. Each returns the raw response so tests can assert on it. */
 
+/** What a test passes to checkOut. Each option is sent only when it is given. */
+export interface CheckOutOptions {
+  /** Identifies this attempt. A fresh key is sent when none is given. */
+  idempotencyKey?: string;
+  paymentToken?: string;
+  couponCode?: string;
+}
+
 /**
- * The one place tests check a cart out. Every checkout in the suite goes through
- * here, so a change to the checkout request (for example a required header) is
- * made once. Each call sends a fresh idempotency key unless the test passes one.
- * The body carries only the options the test passes, so the default request has no body.
+ * The usual way tests check a cart out, so the headers a checkout needs are set in
+ * one place. A few tests post to the checkout route directly. The body carries only
+ * the options the test passes, so the default request has no body.
  */
-export function checkOut(
-  app: Express,
-  customerId: string,
-  cartId: string,
-  idempotencyKey: string = randomUUID(),
-  paymentToken?: string,
-  couponCode?: string,
-) {
+export function checkOut(app: Express, customerId: string, cartId: string, options: CheckOutOptions = {}) {
   const attempt = request(app)
     .post(`/api/carts/${cartId}/checkout`)
     .set('X-Customer-Id', customerId)
-    .set('Idempotency-Key', idempotencyKey);
+    .set('Idempotency-Key', options.idempotencyKey ?? randomUUID());
   const body = {
-    ...(paymentToken === undefined ? {} : { paymentToken }),
-    ...(couponCode === undefined ? {} : { couponCode }),
+    ...(options.paymentToken === undefined ? {} : { paymentToken: options.paymentToken }),
+    ...(options.couponCode === undefined ? {} : { couponCode: options.couponCode }),
   };
   return Object.keys(body).length === 0 ? attempt : attempt.send(body);
 }

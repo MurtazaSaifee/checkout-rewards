@@ -185,24 +185,23 @@ Coupon generation takes only the counter row. Setting a cart line takes the cart
 8. Insert the order, mark the coupon redeemed, insert the lines and mark the cart checked out. The order insert also carries a unique constraint on the coupon code, and a violation gives the same answer as the lock in step 4.
 9. Store the response against the key, and commit.
 
-Any error before step 9 rolls back the whole transaction, including the key claim.
+Any error before step 9 rolls back the whole transaction, including the key claim. `errors.test.ts` checks this with a gateway that fails once with an unexpected error instead of declining: the response is `500 INTERNAL_ERROR`, nothing is placed, and a retry with the same key then places the order.
 
 **Replays.** A replay sends the stored body through the same JSON serialiser. The bytes match the first response because the body holds only strings, integers, nulls and arrays. The idempotency test compares the raw text of both responses, so a change that serialised the body differently would fail it.
 
-**Concurrency tests.** These send simultaneous requests and check the outcome:
+**Concurrency tests.** These send simultaneous requests and check the outcome. Each test runs once unless its entry says it repeats the race in rounds.
 
-- `checkout.test.ts`: "lets exactly as many checkouts succeed as stock allows, fails the rest with INSUFFICIENT_STOCK, and leaves stock at zero"
-- `checkout.test.ts`: "is either included in the order or rejected, and the cart and the order always agree"
-- `checkout-idempotency.test.ts`: "places one order when ten simultaneous checkouts share a key, takes the stock once, and returns identical responses"
-- `checkout-idempotency.test.ts`: "makes a retry that arrives while the first attempt is still running wait for it, then replays its response"
-- `checkout-coupons.test.ts`: "lets exactly one checkout redeem the coupon and answers the other with 422 COUPON_ALREADY_REDEEMED, in every round"
-- `coupons.test.ts`: "issues exactly one coupon per unrewarded milestone and refuses the rest with NO_ELIGIBLE_MILESTONE"
-- `coupons.test.ts`: "refuses with 409 NO_ELIGIBLE_MILESTONE when the unique milestone constraint rejects the insert"
-- `cart-lines.test.ts`: "keeps a single line at the requested quantity when identical requests arrive at the same moment"
-- `cart-lines.test.ts`: "checks stock only as a courtesy, so two customers can each set a quantity up to the stock"
-- `admin-report-reconciliation.test.ts`: "counts every placed order, gapless from one, and the order count equals the highest order number"
+- `checkout.test.ts`: "lets exactly as many checkouts succeed as stock allows, fails the rest with INSUFFICIENT_STOCK, and leaves stock at zero". Eight checkouts race for the three units of `limited-hoodie`. One run.
+- `checkout.test.ts`: "is either included in the order or rejected, and the cart and the order always agree". An edit to a cart races its checkout. The race repeats in 20 rounds, each with a fresh cart.
+- `checkout-idempotency.test.ts`: "places one order when ten simultaneous checkouts share a key, takes the stock once, and returns identical responses". Ten attempts share one key. One run.
+- `checkout-idempotency.test.ts`: "makes a retry that arrives while the first attempt is still running wait for it, then replays its response". The test holds the cart's row lock from a second connection, so the first attempt stops part way through, and the retry is sent while it is stuck. The test checks that the retry waits, then gets the same response as the first attempt. One run.
+- `checkout-coupons.test.ts`: "lets exactly one checkout redeem the coupon and answers the other with 422 COUPON_ALREADY_REDEEMED, in every round". Two carts redeem one coupon at once. The race repeats in 10 rounds, each with its own coupon.
+- `coupons.test.ts`: "issues exactly one coupon per unrewarded milestone and refuses the rest with NO_ELIGIBLE_MILESTONE". Twelve generation calls run at once. One run.
+- `coupons.test.ts`: "refuses with 409 NO_ELIGIBLE_MILESTONE when the unique milestone constraint rejects the insert". This test is not simultaneous. A coupon row is inserted directly to stand in for a call that won the race, so the constraint is what refuses the insert. One run.
+- `cart-lines.test.ts`: "keeps a single line at the requested quantity when identical requests arrive at the same moment". Ten identical requests run at once. One run.
+- `admin-report-reconciliation.test.ts`: "counts every placed order, gapless from one, and the order count equals the highest order number". The test reads the result of mixed simultaneous waves, which run once in the test's setup.
 
-Simultaneous requests make overlap likely, but the tests do not choose an interleaving. Each runs several rounds and checks the outcome of every round. The first item in what to examine next covers deterministic interleavings.
+Simultaneous requests make overlap likely, but most of these tests do not choose an interleaving. The retry test holds a lock to choose one, and the first item in what to examine next extends that technique.
 
 **Money and rounding.**
 
@@ -226,7 +225,7 @@ Each domain error fixes its status, code and title in one place, so a status can
 | 401 | `ADMIN_KEY_INVALID` | The admin key is missing or wrong. |
 | 402 | `PAYMENT_DECLINED` | The gateway declined the payment. |
 | 404 | `CART_NOT_FOUND`, `PRODUCT_NOT_FOUND`, `ORDER_NOT_FOUND`, `ROUTE_NOT_FOUND` | No such cart, product or order is visible to the caller, and no such route exists. |
-| 405 | `METHOD_NOT_ALLOWED` | The route exists, but not for this method. |
+| 405 | `METHOD_NOT_ALLOWED` | The route exists, but not for this method. The response carries an `Allow` header that lists the methods the route accepts. |
 | 409 | `CART_ALREADY_CHECKED_OUT`, `INSUFFICIENT_STOCK`, `PRICE_CHANGED`, `NO_ELIGIBLE_MILESTONE` | The state has changed, or does not allow the action now. |
 | 413 | `PAYLOAD_TOO_LARGE` | The body is larger than the limit. |
 | 415 | `UNSUPPORTED_MEDIA_TYPE` | The body is not JSON. |
@@ -246,7 +245,7 @@ Each checkout writes one outcome line: `ORDER_PLACED`, `IDEMPOTENT_REPLAY`, or t
 
 ## What is built, what is deferred, and known gaps
 
-**Built.** Products are listed. A customer can set and remove cart lines, read a cart, and check it out with an idempotency key. Orders and coupons are listed per customer, and an administrator can generate coupons, list coupons and orders, and read the report. Checkout pays through an in-process gateway that approves `tok_ok` and declines `tok_decline`. The web app covers a customer's cart, checkout, orders and coupons, and an administration panel. Compose runs the database, the API and the web app together. The tests are HTTP tests against real Postgres, plus unit tests for the pricing module.
+**Built.** Products are listed. A customer can set and remove cart lines, read a cart, and check it out with an idempotency key. Orders and coupons are listed per customer, and an administrator can generate coupons, list coupons and orders, and read the report. Checkout pays through an in-process gateway that approves `tok_ok` and declines `tok_decline`. The web app covers a customer's cart, checkout, orders and coupons, and an administration panel. Compose runs the database, the API and the web app together. The tests are HTTP tests against real Postgres, plus unit tests for the pricing module, for configuration parsing in the API and the load script, for the transaction helper, and for the load script's plan, reconciliation and run summary.
 
 **Deferred on purpose.** These were left out of the scope:
 
@@ -262,13 +261,12 @@ Each checkout writes one outcome line: `ORDER_PLACED`, `IDEMPOTENT_REPLAY`, or t
 
 **Known gaps.** These are real defects or weaknesses in the current code. Each is listed here until it is fixed, and then removed.
 
-- The connection pool has no `error` listener, so an error on an idle connection is unhandled and can stop the process.
-- The examples script prints the admin key in the commands it shows. The key is the public development default, but the habit is wrong.
-- The contract validator is loaded on the first request, so a problem in the contract appears at that request rather than at startup.
+- The contract validator loads `api/openapi.yaml` on the first request, so a problem in the contract appears at that request rather than at startup. The library exposes no supported way to wait for the load before the server listens, so the check is not moved to startup.
 - Amount columns are 32-bit integers, so an amount above 2,147,483,647 cents is reported as `INTERNAL_ERROR` rather than as a domain error.
 - Idempotency records are never deleted, so the table grows with every checkout.
 - There are no statement or lock timeouts. A slow checkout holds its rows until it ends.
 - Coupon attempts are not rate-limited, so the coupon answers can be probed freely.
+- Coupon generation takes the next milestone to be the number of coupons issued plus one. That assumes generation is the only writer of coupons, so a coupon inserted directly into the database at a later milestone would stop generation.
 
 ## Beyond one instance
 
@@ -286,18 +284,19 @@ Today every API instance connects to one Postgres database, and no rule depends 
 
 ## How AI tools were used
 
-An AI coding assistant helped with planning, implementation and review. The author set the scope, reviewed each change before it was merged, and decided what to keep. Each branch was built in its own git worktree and reviewed, through its diff and its tests, before it was merged. The examples below are places where the review changed the result.
+An AI coding assistant wrote the code, the tests and the documents. The author set the scope, decided every open semantic question in a question-by-question design session, and chose the workflow. An orchestrating AI session wrote the plan and the work items, and delegated each item to a smaller model, in its own git worktree. The orchestrating session reviewed each branch, by reading its diff and rerunning its tests, before a merge subagent integrated it. The examples below are places where the author's decisions or a review changed the result.
 
 1. **Scope.** The first proposal treated the frontend as optional. The author rejected that, and made the frontend a required testing aid, with the race scenarios among its tools.
 2. **Scope.** Endpoints for changing products were not added. A documented database statement changes prices and stock, which keeps the work on checkout correctness.
 3. **Conflicts.** Two parallel branches each created migration `0004`. Review caught it, and the coupons migration was renumbered `0005` before the merge.
 4. **Observability.** The first checkout implementation logged successes without an outcome code, and left refusals to the generic error log. It was changed to one outcome line per checkout, carrying its code.
 5. **Concurrency.** A lost race in coupon generation surfaced as a 500. It was changed to 409 `NO_ELIGIBLE_MILESTONE`, and a test forces the unique constraint to reject an insert.
-6. **Attribution.** Commit attribution was wrong until a review flagged it. It was corrected.
+6. **Attribution.** Commit attribution was wrong until an implementing subagent flagged it. It was corrected.
 7. **Repository history.** A history rewrite meant to remove material that should not be public also deleted working files. They were restored from a backup bundle taken beforehand. Back up before any rewrite, and check the working tree afterwards.
+8. **Review pass.** A review along two axes, coding standards and conformance to the plan, found the problems fixed in the final fix pass, and one subagent fixed them.
 
 ## What to examine first with two more hours
 
-1. **Interleavings.** Hold a coupon or cart row lock from a test connection, let a checkout wait on it, release the lock, and check that the waiter re-reads the committed state. The current tests sample overlap with `Promise.all`, which makes overlap likely but does not choose the order. This test would check the READ COMMITTED reasoning directly.
+1. **Interleavings.** The retry test in `checkout-idempotency.test.ts` holds a cart row lock from a test connection, sends a retry that must wait on it, releases the lock, and checks that the waiting retry gets the first attempt's response. Extend that technique to the coupon lock, where a second checkout that names the coupon waits for the first to commit, and to the cart-edit-versus-checkout path, where an edit waits for a checkout. The other concurrency tests sample overlap with `Promise.all`, which makes overlap likely but does not choose the order. These tests would check the READ COMMITTED reasoning directly.
 2. **Two-phase payment.** The charge runs while the cart and stock locks are held. Separating the pending order from the payment removes that, and it is the change with the largest effect on throughput.
-3. **The known gaps.** Start with the missing pool error listener, and with the 32-bit amount columns, which can answer a valid request with a 500.
+3. **The known gaps.** Start with the 32-bit amount columns, which can answer a valid request with a 500.

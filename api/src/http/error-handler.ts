@@ -20,8 +20,28 @@ export const problemErrorHandler: ErrorRequestHandler = (error: unknown, req, re
     req.log.info({ code: body.code, status }, 'request rejected');
   }
 
+  const allow = status === 405 ? allowedMethodsOf(error) : undefined;
+  if (allow !== undefined) {
+    res.set('Allow', allow);
+  }
   res
     .status(status)
     .type('application/problem+json')
     .json(body);
 };
+
+/**
+ * The methods the contract documents for the path, from the validator's 405.
+ * The validator lists them in lower case; HTTP method names are upper case.
+ */
+function allowedMethodsOf(error: unknown): string | undefined {
+  if (typeof error !== 'object' || error === null || !('headers' in error)) return undefined;
+  const { headers } = error;
+  if (typeof headers !== 'object' || headers === null || !('Allow' in headers)) return undefined;
+  const allow = headers.Allow;
+  if (typeof allow !== 'string') return undefined;
+  return allow
+    .split(',')
+    .map((method) => method.trim().toUpperCase())
+    .join(', ');
+}

@@ -1,7 +1,7 @@
 import type { Pool, PoolClient } from 'pg';
 import type { CouponRules } from '../../config.js';
 import { withTransaction } from '../../db/transaction.js';
-import { milestonesReached } from '../pricing/pricing.js';
+import { unrewardedMilestones } from '../pricing/pricing.js';
 import { newCouponCode } from './coupon.codes.js';
 import {
   CouponAlreadyRedeemedError,
@@ -20,21 +20,10 @@ import {
   lockCouponByCode,
   lockOrderCount,
 } from './coupons.repository.js';
+import { isUniqueViolation } from '../../db/unique-violation.js';
 
-/** Postgres's unique violation, and the name it gives the unique constraint on the milestone column. */
-const UNIQUE_VIOLATION = '23505';
+/** The unique constraint on the milestone column: one coupon per milestone. */
 const MILESTONE_CONSTRAINT = 'coupons_milestone_key';
-
-/** True only for the milestone constraint, so any other failure still surfaces as an error. */
-function isMilestoneAlreadyRewarded(error: unknown): boolean {
-  return (
-    error instanceof Error &&
-    'code' in error &&
-    error.code === UNIQUE_VIOLATION &&
-    'constraint' in error &&
-    error.constraint === MILESTONE_CONSTRAINT
-  );
-}
 
 /** The answer to generating a coupon: the coupon, the customer it went to, and what is still owed. */
 export interface GeneratedCouponView {
@@ -57,11 +46,11 @@ export interface GeneratedCouponView {
 export async function generateCoupon(db: Pool, rules: CouponRules): Promise<GeneratedCouponView> {
   return withTransaction(db, async (client) => {
     const orderCount = await lockOrderCount(client);
-    const reached = milestonesReached(orderCount, rules.everyNOrders);
-    const milestone = (await countIssuedCoupons(client)) + 1;
-    if (milestone > reached) {
+    const issued = await countIssuedCoupons(client);
+    if (unrewardedMilestones(orderCount, issued, rules.everyNOrders) < 1) {
       throw new NoEligibleMilestoneError();
     }
+    const milestone = issued + 1;
 
     const milestoneOrderNumber = milestone * rules.everyNOrders;
     const customerId = await findCustomerOfOrder(client, milestoneOrderNumber);
@@ -74,7 +63,7 @@ export async function generateCoupon(db: Pool, rules: CouponRules): Promise<Gene
       await insertCoupon(client, { code, milestone, customerId, percentOff: rules.percentOff });
     } catch (error) {
       // Another call rewarded this milestone first, so the constraint refused the insert.
-      if (isMilestoneAlreadyRewarded(error)) {
+      if (isUniqueViolation(error, MILESTONE_CONSTRAINT)) {
         throw new NoEligibleMilestoneError();
       }
       throw error;
@@ -83,7 +72,7 @@ export async function generateCoupon(db: Pool, rules: CouponRules): Promise<Gene
     return {
       coupon: { code, percentOff: rules.percentOff, milestone, redeemed: false },
       customerId,
-      unrewardedMilestonesRemaining: reached - milestone,
+      unrewardedMilestonesRemaining: unrewardedMilestones(orderCount, milestone, rules.everyNOrders),
     };
   });
 }

@@ -133,7 +133,7 @@ describe('the admin report of coupons and milestones', () => {
     const bobCart = await createCart(database.app, 'bob');
     expect((await setLine(database.app, 'bob', bobCart, 'notebook-set', 1)).status).toBe(200);
     const { coupons } = (await listMyCoupons(database.app, 'bob')).body as { coupons: Coupon[] };
-    const redeemed = await checkOut(database.app, 'bob', bobCart, undefined, undefined, coupons[0]!.code);
+    const redeemed = await checkOut(database.app, 'bob', bobCart, { couponCode: coupons[0]!.code });
     expect(redeemed.status).toBe(201);
 
     // Order 4: carol, 1,200, which reaches milestone 2. Nothing has been generated for it yet.

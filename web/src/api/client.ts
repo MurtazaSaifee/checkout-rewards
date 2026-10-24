@@ -96,21 +96,26 @@ export async function removeCartLine(
   return readJson<Cart>(response);
 }
 
+/** What a checkout is paid with and checked against. */
+export interface CheckOutOptions {
+  /** The gateway's answer for this attempt. */
+  paymentToken: PaymentToken;
+  /** The total the customer saw. A different total at current prices is refused with PRICE_CHANGED. */
+  expectedTotalCents?: number;
+  /** The customer's coupon to redeem with this order. */
+  couponCode?: string;
+}
+
 /**
  * Places the order for the cart in full, or changes nothing. The key names this attempt:
- * a retry with the same key gets the same answer back. The payment token is the gateway's
- * answer for this attempt. The expected total, when given, is the total the customer saw:
- * a different total at current prices is refused with PRICE_CHANGED. The coupon code, when
- * given, is the customer's coupon to redeem with this order. A refusal, including a declined
+ * a retry with the same key gets the same answer back. A refusal, including a declined
  * payment, comes back as an ApiError.
  */
 export async function checkOutCart(
   customerId: string,
   cartId: string,
   idempotencyKey: string,
-  paymentToken: PaymentToken,
-  expectedTotalCents?: number,
-  couponCode?: string,
+  { paymentToken, expectedTotalCents, couponCode }: CheckOutOptions,
   signal?: AbortSignal,
 ): Promise<Order> {
   const body: { paymentToken: PaymentToken; expectedTotalCents?: number; couponCode?: string } = {
@@ -136,8 +141,7 @@ export function currentTotalOf(error: unknown): number | undefined {
   if (!(error instanceof ApiError) || error.problem?.code !== 'PRICE_CHANGED') {
     return undefined;
   }
-  const current: unknown = error.problem['currentTotalCents'];
-  return typeof current === 'number' ? current : undefined;
+  return error.problem.currentTotalCents;
 }
 
 /** A key for one checkout attempt. Built from random bytes, so it works outside a secure context too. */

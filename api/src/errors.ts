@@ -8,7 +8,7 @@ export type HttpErrorCode =
   | 'UNSUPPORTED_MEDIA_TYPE'
   | 'INTERNAL_ERROR';
 
-/** Codes raised by domain modules. */
+/** Codes raised by domain modules, and by the guards in http/ that check the caller's headers. */
 export type DomainErrorCode =
   | 'CUSTOMER_ID_REQUIRED'
   | 'CART_NOT_FOUND'

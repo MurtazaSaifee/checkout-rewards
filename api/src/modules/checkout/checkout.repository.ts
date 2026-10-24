@@ -1,5 +1,6 @@
 import type { PoolClient } from 'pg';
 import type { CartLineRow } from '../carts/carts.repository.js';
+import { singleRow } from '../../db/rows.js';
 import { lineAmountCents } from '../pricing/pricing.js';
 
 /**
@@ -14,10 +15,7 @@ export async function takeNextOrderNumber(client: PoolClient): Promise<number> {
       WHERE id = 1
   RETURNING last_order_number AS "orderNumber"`,
   );
-  const [row] = rows;
-  if (row === undefined) {
-    throw new Error('order_counter has no row, so no order number can be taken');
-  }
+  const row = singleRow(rows, 'order_counter has no row, so no order number can be taken');
   return row.orderNumber;
 }
 
@@ -50,10 +48,7 @@ export async function insertOrder(client: PoolClient, order: NewOrder): Promise<
       order.totalCents,
     ],
   );
-  const [row] = rows;
-  if (row === undefined) {
-    throw new Error('INSERT ... RETURNING produced no row');
-  }
+  const row = singleRow(rows, 'INSERT ... RETURNING produced no row');
   return row.id;
 }
 

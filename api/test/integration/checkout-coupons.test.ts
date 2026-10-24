@@ -110,7 +110,7 @@ describe('redeeming a coupon at checkout', () => {
       ['ceramic-mug', 1],
     ]);
 
-    const response = await checkOut(database.app, 'alice', cartId, undefined, undefined, coupon.code);
+    const response = await checkOut(database.app, 'alice', cartId, { couponCode: coupon.code });
 
     expect(response.status).toBe(201);
     const order = response.body as Order;
@@ -131,11 +131,11 @@ describe('redeeming a coupon at checkout', () => {
   it('answers an already-redeemed coupon with 422 COUPON_ALREADY_REDEEMED, and places no second order', async () => {
     const coupon = earned.carol!;
     const first = await cartWith(database.app, 'carol', [['enamel-bottle', 1]]);
-    expect((await checkOut(database.app, 'carol', first, undefined, undefined, coupon.code)).status).toBe(201);
+    expect((await checkOut(database.app, 'carol', first, { couponCode: coupon.code })).status).toBe(201);
     const ordersBefore = ((await listMyOrders(database.app, 'carol')).body as { orders: Order[] }).orders.length;
 
     const second = await cartWith(database.app, 'carol', [['enamel-bottle', 1]]);
-    const response = await checkOut(database.app, 'carol', second, undefined, undefined, coupon.code);
+    const response = await checkOut(database.app, 'carol', second, { couponCode: coupon.code });
     const cart = (await viewCart(database.app, 'carol', second)).body as Cart;
 
     expect(response.status).toBe(422);
@@ -170,7 +170,7 @@ describe('two carts redeeming one coupon at the same time', () => {
       const before = await productStock(database.app);
 
       const responses = await Promise.all(
-        carts.map((cartId) => checkOut(database.app, customerId, cartId, undefined, undefined, coupon.code)),
+        carts.map((cartId) => checkOut(database.app, customerId, cartId, { couponCode: coupon.code })),
       );
 
       const placed = responses.filter((response) => response.status === 201);
@@ -209,14 +209,14 @@ describe('a checkout that fails leaves its coupon available', () => {
     const cartId = await cartWith(database.app, 'dave', [['canvas-tote', 2]]);
     const stockBefore = await productStock(database.app);
 
-    const declined = await checkOut(database.app, 'dave', cartId, 'dave-retry', 'tok_decline', coupon.code);
+    const declined = await checkOut(database.app, 'dave', cartId, { idempotencyKey: 'dave-retry', paymentToken: 'tok_decline', couponCode: coupon.code });
 
     expect(declined.status).toBe(402);
     expect(declined.body).toMatchObject({ status: 402, code: 'PAYMENT_DECLINED' });
     expect(await couponOf(database.app, 'dave', coupon.code)).toMatchObject({ redeemed: false });
     expect(await productStock(database.app)).toEqual(stockBefore);
 
-    const approved = await checkOut(database.app, 'dave', cartId, 'dave-retry', 'tok_ok', coupon.code);
+    const approved = await checkOut(database.app, 'dave', cartId, { idempotencyKey: 'dave-retry', paymentToken: 'tok_ok', couponCode: coupon.code });
 
     expect(approved.status).toBe(201);
     expect(approved.body as Order).toMatchObject({
@@ -233,14 +233,14 @@ describe('a checkout that fails leaves its coupon available', () => {
     // Stock runs out after the line was set, as it does when another customer buys the last tee.
     await database.pool.query("UPDATE products SET stock = 0 WHERE id = 'classic-tee'");
 
-    const refused = await checkOut(database.app, 'erin', cartId, 'erin-retry', undefined, coupon.code);
+    const refused = await checkOut(database.app, 'erin', cartId, { idempotencyKey: 'erin-retry', couponCode: coupon.code });
 
     expect(refused.status).toBe(409);
     expect(refused.body).toMatchObject({ status: 409, code: 'INSUFFICIENT_STOCK' });
     expect(await couponOf(database.app, 'erin', coupon.code)).toMatchObject({ redeemed: false });
 
     await database.pool.query("UPDATE products SET stock = 1 WHERE id = 'classic-tee'");
-    const retry = await checkOut(database.app, 'erin', cartId, 'erin-retry', undefined, coupon.code);
+    const retry = await checkOut(database.app, 'erin', cartId, { idempotencyKey: 'erin-retry', couponCode: coupon.code });
 
     expect(retry.status).toBe(201);
     expect(retry.body as Order).toMatchObject({ couponCode: coupon.code });
@@ -250,7 +250,7 @@ describe('a checkout that fails leaves its coupon available', () => {
     const coupon = earned.frank!;
     const cartId = await createCart(database.app, 'frank');
 
-    const response = await checkOut(database.app, 'frank', cartId, undefined, undefined, coupon.code);
+    const response = await checkOut(database.app, 'frank', cartId, { couponCode: coupon.code });
 
     expect(response.status).toBe(422);
     expect(response.body).toMatchObject({ status: 422, code: 'CART_EMPTY' });
@@ -271,7 +271,7 @@ describe('coupons a checkout cannot use', () => {
     const cartId = await cartWith(database.app, 'grace', [['canvas-tote', 1]]);
     const stockBefore = await productStock(database.app);
 
-    const response = await checkOut(database.app, 'grace', cartId, undefined, undefined, UNISSUED_CODE);
+    const response = await checkOut(database.app, 'grace', cartId, { couponCode: UNISSUED_CODE });
     const cart = (await viewCart(database.app, 'grace', cartId)).body as Cart;
 
     expect(response.status).toBe(422);
@@ -284,7 +284,7 @@ describe('coupons a checkout cannot use', () => {
     const coupon = earned.heidi!;
     const cartId = await cartWith(database.app, 'ivan', [['canvas-tote', 1]]);
 
-    const refused = await checkOut(database.app, 'ivan', cartId, undefined, undefined, coupon.code);
+    const refused = await checkOut(database.app, 'ivan', cartId, { couponCode: coupon.code });
     const cart = (await viewCart(database.app, 'ivan', cartId)).body as Cart;
 
     expect(refused.status).toBe(422);
@@ -293,7 +293,7 @@ describe('coupons a checkout cannot use', () => {
     expect(await couponOf(database.app, 'heidi', coupon.code)).toMatchObject({ redeemed: false });
 
     const owned = await cartWith(database.app, 'heidi', [['canvas-tote', 1]]);
-    expect((await checkOut(database.app, 'heidi', owned, undefined, undefined, coupon.code)).status).toBe(201);
+    expect((await checkOut(database.app, 'heidi', owned, { couponCode: coupon.code })).status).toBe(201);
   });
 });
 
@@ -313,9 +313,9 @@ describe('the coupon is part of the idempotency fingerprint', () => {
     const second = earned.judySecond!;
     const cartId = await cartWith(database.app, 'judy', [['ceramic-mug', 1]]);
 
-    const placed = await checkOut(database.app, 'judy', cartId, 'judy-key', undefined, first.code);
-    const replay = await checkOut(database.app, 'judy', cartId, 'judy-key', undefined, first.code);
-    const changed = await checkOut(database.app, 'judy', cartId, 'judy-key', undefined, second.code);
+    const placed = await checkOut(database.app, 'judy', cartId, { idempotencyKey: 'judy-key', couponCode: first.code });
+    const replay = await checkOut(database.app, 'judy', cartId, { idempotencyKey: 'judy-key', couponCode: first.code });
+    const changed = await checkOut(database.app, 'judy', cartId, { idempotencyKey: 'judy-key', couponCode: second.code });
 
     expect(placed.status).toBe(201);
     expect(replay.status).toBe(201);
@@ -329,8 +329,8 @@ describe('the coupon is part of the idempotency fingerprint', () => {
     const coupon = earned.kim!;
     const cartId = await cartWith(database.app, 'kim', [['ceramic-mug', 1]]);
 
-    const withoutCoupon = await checkOut(database.app, 'kim', cartId, 'kim-key');
-    const withCoupon = await checkOut(database.app, 'kim', cartId, 'kim-key', undefined, coupon.code);
+    const withoutCoupon = await checkOut(database.app, 'kim', cartId, { idempotencyKey: 'kim-key' });
+    const withCoupon = await checkOut(database.app, 'kim', cartId, { idempotencyKey: 'kim-key', couponCode: coupon.code });
 
     expect(withoutCoupon.status).toBe(201);
     expect(withCoupon.status).toBe(422);
@@ -354,7 +354,7 @@ describe('the amount charged', () => {
       ['limited-hoodie', 1],
       ['ceramic-mug', 1],
     ]);
-    await checkOut(database.app, 'lena', withCoupon, undefined, undefined, earned.lena!.code);
+    await checkOut(database.app, 'lena', withCoupon, { couponCode: earned.lena!.code });
     expect(payments.charges.at(-1)).toEqual({ amountCents: 9180, paymentToken: 'tok_ok' });
 
     const withoutCoupon = await cartWith(database.app, 'mona', [['ceramic-mug', 1]]);

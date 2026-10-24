@@ -10,8 +10,24 @@ set -euo pipefail
 
 BASE_URL="${BASE_URL:-http://localhost:8080/api}"
 
+# The admin key the stack was started with. It is read here once and never printed.
+ADMIN_KEY_VALUE="${ADMIN_KEY:-local-admin-key}"
+
 # The body of the most recent check, for examples that use a value from it.
 LAST_BODY=''
+
+# shown_args CURL_ARGS...: the arguments as the output prints them. The admin key
+# header shows the variable name, so the value never appears in the output.
+shown_args() {
+  local arg shown=''
+  for arg in "$@"; do
+    if [[ "$arg" == "X-Admin-Key: $ADMIN_KEY_VALUE" ]]; then
+      arg='X-Admin-Key: $ADMIN_KEY'
+    fi
+    shown+="${shown:+ }$arg"
+  done
+  printf '%s' "$shown"
+}
 
 # check EXPECTED_STATUS TITLE CURL_ARGS...
 # Runs curl, prints the status and body (pretty-printed when it is JSON), and
@@ -27,7 +43,7 @@ check() {
   body="${response%$'\n'*}"
   LAST_BODY="$body"
 
-  printf '\n== %s\n%s %s\n' "$title" "$*" "→ HTTP $status"
+  printf '\n== %s\n%s %s\n' "$title" "$(shown_args "$@")" "→ HTTP $status"
   if printf '%s' "$body" | jq . >/dev/null 2>&1; then
     printf '%s' "$body" | jq .
   else
@@ -180,7 +196,7 @@ check 200 "Dan's cart is still open after the refusal" -X GET "${DAN[@]}" "$BASE
 #
 # The admin key is a placeholder that keeps admin operations out of ordinary use. It is not
 # security: anyone who knows it can issue coupons. ADMIN_KEY sets it; the default matches the README.
-ADMIN=(-H "X-Admin-Key: ${ADMIN_KEY:-local-admin-key}")
+ADMIN=(-H "X-Admin-Key: $ADMIN_KEY_VALUE")
 GRACE=(-H 'X-Customer-Id: example-grace')
 
 # assert_body FILTER...: fails the script unless the last response body satisfies the jq filter.

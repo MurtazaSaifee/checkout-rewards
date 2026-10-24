@@ -1,4 +1,5 @@
 import type { PoolClient, QueryResultRow } from 'pg';
+import { singleRow } from '../../db/rows.js';
 import type { SqlRunner } from '../../db/transaction.js';
 import { CartAlreadyCheckedOutError, CartNotFoundError } from './cart.errors.js';
 
@@ -23,10 +24,7 @@ export async function insertCart(runner: SqlRunner, customerId: string): Promise
     'INSERT INTO carts (customer_id) VALUES ($1) RETURNING id',
     [customerId],
   );
-  const [row] = rows;
-  if (row === undefined) {
-    throw new Error('INSERT ... RETURNING produced no row');
-  }
+  const row = singleRow(rows, 'INSERT ... RETURNING produced no row');
   return row.id;
 }
 

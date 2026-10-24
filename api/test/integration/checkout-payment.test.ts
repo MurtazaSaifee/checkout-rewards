@@ -20,7 +20,7 @@ describe('paying for a checkout', () => {
     await setLine(database.app, 'alice', cartId, 'canvas-tote', 2);
     const stockBefore = await productStock(database.app);
 
-    const response = await checkOut(database.app, 'alice', cartId, undefined, 'tok_decline');
+    const response = await checkOut(database.app, 'alice', cartId, { paymentToken: 'tok_decline' });
     const cart = (await viewCart(database.app, 'alice', cartId)).body as Cart;
 
     expect(response.status).toBe(402);
@@ -38,8 +38,8 @@ describe('paying for a checkout', () => {
 
     const cartId = await createCart(database.app, 'alice');
     await setLine(database.app, 'alice', cartId, 'canvas-tote', 2);
-    const declined = await checkOut(database.app, 'alice', cartId, undefined, 'tok_decline');
-    const approved = await checkOut(database.app, 'alice', cartId, undefined, 'tok_ok');
+    const declined = await checkOut(database.app, 'alice', cartId, { paymentToken: 'tok_decline' });
+    const approved = await checkOut(database.app, 'alice', cartId, { paymentToken: 'tok_ok' });
     const cart = (await viewCart(database.app, 'alice', cartId)).body as Cart;
 
     expect(bob.status).toBe(201);
@@ -54,7 +54,7 @@ describe('paying for a checkout', () => {
     await setLine(database.app, 'carol', cartId, 'ceramic-mug', 1);
     const stockBefore = await productStock(database.app);
 
-    const response = await checkOut(database.app, 'carol', cartId, undefined, 'tok_maybe');
+    const response = await checkOut(database.app, 'carol', cartId, { paymentToken: 'tok_maybe' });
     const cart = (await viewCart(database.app, 'carol', cartId)).body as Cart;
 
     expect(response.status).toBe(400);
@@ -71,8 +71,8 @@ describe('payment tokens and idempotency keys', () => {
     const cartId = await createCart(database.app, 'dave');
     await setLine(database.app, 'dave', cartId, 'enamel-bottle', 1);
 
-    const declined = await checkOut(database.app, 'dave', cartId, 'dave-attempt', 'tok_decline');
-    const retried = await checkOut(database.app, 'dave', cartId, 'dave-attempt', 'tok_ok');
+    const declined = await checkOut(database.app, 'dave', cartId, { idempotencyKey: 'dave-attempt', paymentToken: 'tok_decline' });
+    const retried = await checkOut(database.app, 'dave', cartId, { idempotencyKey: 'dave-attempt', paymentToken: 'tok_ok' });
 
     expect(declined.status).toBe(402);
     expect(retried.status).toBe(201);
@@ -82,9 +82,9 @@ describe('payment tokens and idempotency keys', () => {
   it('treats a different payment token under a key that placed an order as a different request, and refuses it', async () => {
     const cartId = await createCart(database.app, 'erin');
     await setLine(database.app, 'erin', cartId, 'ceramic-mug', 1);
-    const placed = await checkOut(database.app, 'erin', cartId, 'erin-attempt', 'tok_ok');
+    const placed = await checkOut(database.app, 'erin', cartId, { idempotencyKey: 'erin-attempt', paymentToken: 'tok_ok' });
 
-    const changed = await checkOut(database.app, 'erin', cartId, 'erin-attempt', 'tok_decline');
+    const changed = await checkOut(database.app, 'erin', cartId, { idempotencyKey: 'erin-attempt', paymentToken: 'tok_decline' });
 
     expect(placed.status).toBe(201);
     expect(changed.status).toBe(422);

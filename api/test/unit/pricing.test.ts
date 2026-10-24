@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
   discountCents,
-  isMilestoneOrder,
   lineAmountCents,
   milestonesReached,
   priceOrder,
   subtotalCents,
+  unrewardedMilestones,
 } from '../../src/modules/pricing/pricing.js';
 
 describe('lineAmountCents', () => {
@@ -57,20 +57,20 @@ describe('milestonesReached', () => {
   });
 });
 
-describe('isMilestoneOrder', () => {
-  it('is true for every multiple of n', () => {
-    expect(isMilestoneOrder(5, 5)).toBe(true);
-    expect(isMilestoneOrder(10, 5)).toBe(true);
-    expect(isMilestoneOrder(1, 1)).toBe(true);
+describe('unrewardedMilestones', () => {
+  it('is the milestones reached less the coupons already issued', () => {
+    expect(unrewardedMilestones(10, 0, 5)).toBe(2);
+    expect(unrewardedMilestones(10, 1, 5)).toBe(1);
+    expect(unrewardedMilestones(10, 2, 5)).toBe(0);
   });
 
-  it('is false for the orders between milestones', () => {
-    expect(isMilestoneOrder(4, 5)).toBe(false);
-    expect(isMilestoneOrder(6, 5)).toBe(false);
+  it('is zero before the first milestone is reached', () => {
+    expect(unrewardedMilestones(4, 0, 5)).toBe(0);
   });
 
-  it('is false for zero, which is not an order number', () => {
-    expect(isMilestoneOrder(0, 5)).toBe(false);
+  it('counts a new milestone as soon as its order is placed', () => {
+    expect(unrewardedMilestones(5, 0, 5)).toBe(1);
+    expect(unrewardedMilestones(6, 1, 5)).toBe(0);
   });
 });
 

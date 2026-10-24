@@ -1,7 +1,7 @@
 import type { Pool } from 'pg';
 import type { CouponRules } from '../../config.js';
 import { READ_ONLY_SNAPSHOT, withTransaction } from '../../db/transaction.js';
-import { milestonesReached } from '../pricing/pricing.js';
+import { unrewardedMilestones } from '../pricing/pricing.js';
 import { readCouponCounts, readOrderTotals, readUnitsSold } from './reporting.repository.js';
 
 /** The admin report, as the route sends it. Every figure is calculated from the orders and coupons on each call. */
@@ -39,8 +39,7 @@ export async function buildReport(db: Pool, rules: CouponRules): Promise<ReportV
         couponsGenerated: coupons.generated,
         couponsRedeemed: coupons.redeemed,
         couponsAvailable: coupons.generated - coupons.redeemed,
-        // Milestones reached by the order count, less the coupons already issued for them.
-        unrewardedMilestones: milestonesReached(totals.orderCount, rules.everyNOrders) - coupons.generated,
+        unrewardedMilestones: unrewardedMilestones(totals.orderCount, coupons.generated, rules.everyNOrders),
       };
     },
     READ_ONLY_SNAPSHOT,

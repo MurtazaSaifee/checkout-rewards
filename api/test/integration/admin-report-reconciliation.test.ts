@@ -153,9 +153,9 @@ describe('the admin report after a mix of successful and refused checkouts', () 
     const wesCart = await cartWith(app, 'wes', [['canvas-tote', 2]]);
 
     const [redeemFirst, redeemSecondOne, redeemSecondTwo, wes, ...hoodies] = await Promise.all([
-      answerOf(checkOut(app, first.customerId, firstCart, undefined, undefined, first.coupon.code)),
-      answerOf(checkOut(app, second.customerId, secondCartOne, undefined, undefined, second.coupon.code)),
-      answerOf(checkOut(app, second.customerId, secondCartTwo, undefined, undefined, second.coupon.code)),
+      answerOf(checkOut(app, first.customerId, firstCart, { couponCode: first.coupon.code })),
+      answerOf(checkOut(app, second.customerId, secondCartOne, { couponCode: second.coupon.code })),
+      answerOf(checkOut(app, second.customerId, secondCartTwo, { couponCode: second.coupon.code })),
       answerOf(checkOut(app, 'wes', wesCart)),
       ...hoodieCarts.map(({ customerId, cartId }) => answerOf(checkOut(app, customerId, cartId))),
     ]);
@@ -166,9 +166,9 @@ describe('the admin report after a mix of successful and refused checkouts', () 
 
     // A declined payment places nothing. The same cart then checks out with the approved payment, and redeems the coupon.
     const thirdCart = await cartWith(app, third.customerId, [['classic-tee', 1]]);
-    const declined = await answerOf(checkOut(app, third.customerId, thirdCart, undefined, 'tok_decline', third.coupon.code));
+    const declined = await answerOf(checkOut(app, third.customerId, thirdCart, { paymentToken: 'tok_decline', couponCode: third.coupon.code }));
     const approvedAfterDecline = await answerOf(
-      checkOut(app, third.customerId, thirdCart, undefined, 'tok_ok', third.coupon.code),
+      checkOut(app, third.customerId, thirdCart, { paymentToken: 'tok_ok', couponCode: third.coupon.code }),
     );
 
     // The price of a bottle changes after the customer has seen the cart. The stale total is refused, and the new total is placed.

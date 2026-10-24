@@ -30,6 +30,7 @@ export interface TestDatabaseOptions {
 interface TestDatabaseState {
   app: Express;
   pool: Pool;
+  url: string;
 }
 
 /**
@@ -40,6 +41,8 @@ interface TestDatabaseState {
 export function useTestDatabase(options: TestDatabaseOptions = {}): {
   readonly app: Express;
   readonly pool: Pool;
+  /** Connection URL of this file's database, for a test that opens its own pool. */
+  readonly url: string;
 } {
   const state = {} as TestDatabaseState;
   let adminPool: Pool;
@@ -52,8 +55,9 @@ export function useTestDatabase(options: TestDatabaseOptions = {}): {
 
     const url = new URL(ADMIN_DATABASE_URL);
     url.pathname = `/${databaseName}`;
+    state.url = url.toString();
     // Enough connections for ten simultaneous requests to run at once, as the concurrency cases need.
-    state.pool = new Pool({ connectionString: url.toString(), max: 12 });
+    state.pool = new Pool({ connectionString: state.url, max: 12 });
 
     await bootstrapDatabase(state.pool);
     state.app = createApp({
@@ -80,6 +84,9 @@ export function useTestDatabase(options: TestDatabaseOptions = {}): {
     },
     get pool() {
       return state.pool;
+    },
+    get url() {
+      return state.url;
     },
   };
 }

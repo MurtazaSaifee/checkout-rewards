@@ -22,15 +22,22 @@ export async function withTransaction<T>(
   begin = 'BEGIN',
 ): Promise<T> {
   const client = await pool.connect();
+  let discard: Error | undefined;
   try {
     await client.query(begin);
     const result = await work(client);
     await client.query('COMMIT');
     return result;
   } catch (error) {
-    await client.query('ROLLBACK');
+    try {
+      await client.query('ROLLBACK');
+    } catch (rollbackError) {
+      // A connection that failed to roll back is in an unknown state. Release it
+      // with the error so the pool discards it, and let the original error reach the caller.
+      discard = rollbackError instanceof Error ? rollbackError : new Error(String(rollbackError));
+    }
     throw error;
   } finally {
-    client.release();
+    client.release(discard);
   }
 }
