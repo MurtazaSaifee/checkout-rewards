@@ -243,3 +243,43 @@ The status tells the client what to do next:
 - **500** from a checkout means nothing was placed, so the same `Idempotency-Key` can be retried.
 
 Each checkout writes one outcome line: `ORDER_PLACED`, `IDEMPOTENT_REPLAY`, or the code of its refusal. An operator can count outcomes from the logs without reading response bodies. An unexpected failure is logged at error level by the error handler instead.
+
+## What is built, what is deferred, and known gaps
+
+**Built.** Products are listed. A customer can set and remove cart lines, read a cart, and check it out with an idempotency key. Orders and coupons are listed per customer, and an administrator can generate coupons, list coupons and orders, and read the report. Checkout pays through an in-process gateway that approves `tok_ok` and declines `tok_decline`. The web app covers a customer's cart, checkout, orders and coupons, and an administration panel. Compose runs the database, the API and the web app together. The tests are HTTP tests against real Postgres, plus unit tests for the pricing module.
+
+**Deferred on purpose.** These were left out of the scope:
+
+- Authentication. The customer and admin identities are the placeholders in decision 7.
+- A real payment provider, and the two-phase payment flow described below.
+- Stock holds and their expiry, and cleanup of abandoned carts.
+- Endpoints to change products. Prices and stock are changed in the database.
+- Coupon expiry, stacking several coupons, and changing the milestone interval or the coupon percentage while the service runs.
+- Cancellation and refunds.
+- Expiry of idempotency keys.
+- Metrics, tracing, dashboards and production deployment.
+- Frontend tests and visual polish, multiple currencies, and taxes.
+
+**Known gaps.** These are real defects or weaknesses in the current code. Each is listed here until it is fixed, and then removed.
+
+- The connection pool has no `error` listener, so an error on an idle connection is unhandled and can stop the process.
+- The examples script prints the admin key in the commands it shows. The key is the public development default, but the habit is wrong.
+- The contract validator is loaded on the first request, so a problem in the contract appears at that request rather than at startup.
+- Amount columns are 32-bit integers, so an amount above 2,147,483,647 cents is reported as `INTERNAL_ERROR` rather than as a domain error.
+- Idempotency records are never deleted, so the table grows with every checkout.
+- There are no statement or lock timeouts. A slow checkout holds its rows until it ends.
+- Coupon attempts are not rate-limited, so the coupon answers can be probed freely.
+
+## Beyond one instance
+
+Today every API instance connects to one Postgres database, and no rule depends on which instance served a request. Nothing that matters is held in process beyond configuration and the connection pool. The changes below are what a production version would need. They are not built here.
+
+- **Two-phase payment.** The checkout charges while it holds the cart and stock locks, so a slow gateway lengthens every waiting request. A production version would first record a pending order, charge with an idempotency key the provider accepts, then confirm or release the order. A reconciliation job would settle any payment whose outcome was never recorded. The charge would then run outside the locks that hold the cart and stock.
+- **The counter row as a ceiling.** Every placed order passes through one row. That is acceptable at this scale, but it caps throughput. Measure its lock wait under load before changing it. An every-nth rule cannot be split across several counters without changing which order counts as the nth, so a change here has to keep one sequence of order numbers.
+- **Popular products.** A popular product serialises its checkouts on one stock row. Stock holds with expiry would move that wait to the cart, which this build does not do.
+- **Reports at scale.** The report reads the order history on each request. A read model updated in the same transaction as each order would keep reads cheap, and the reconciliation test would remain the check that it agrees with the lists.
+- **Real authentication.** It replaces the customer header in the same middleware. Every owner filter in the queries stays, so the identity change does not reach the queries. Administrators get a role in place of the shared key.
+- **Metrics.** Count outcomes by code, and time the waits for locks and for connections, so the cost of the cart and product locks is visible before it becomes a problem.
+- **Timeouts.** Set a statement timeout and a lock timeout on each session, so one stuck call cannot hold rows indefinitely.
+- **Idempotency retention.** Keep each key for longer than any client's retry window, then delete keys in a batch. Deleting too early would let a late retry place a second order.
+- **Shared configuration.** Every instance must run with the same `ADMIN_KEY`, `COUPON_EVERY_N_ORDERS` and `COUPON_PERCENT_OFF`. Settings live in each process, not in the database, so an instance with a different interval would issue coupons at different milestones without any error.
