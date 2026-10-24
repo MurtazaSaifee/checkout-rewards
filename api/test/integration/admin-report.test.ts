@@ -96,8 +96,8 @@ describe('reading the report', () => {
 
   it('changes no state: orders, coupons and stock are the same after any number of reads', async () => {
     const productsBefore = (await request(database.app).get('/api/products')).body as ProductListing;
-    const couponsBefore = (await listAllCoupons(database.app)).body;
-    const aliceOrdersBefore = (await listMyOrders(database.app, 'alice')).body;
+    const couponsBefore = (await listAllCoupons(database.app)).body as unknown;
+    const aliceOrdersBefore = (await listMyOrders(database.app, 'alice')).body as unknown;
 
     await getReport(database.app);
     await getReport(database.app);
