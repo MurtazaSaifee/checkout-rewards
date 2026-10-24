@@ -204,6 +204,14 @@ paths:
         a checked-out cart can no longer be changed.
 
 
+        A checkout may name one coupon by its code. The coupon must be one the
+        calling customer holds and has not redeemed. Its percentage comes off
+        the subtotal, rounded down to a whole cent and taken once, and the
+        order records the coupon, the percentage and the discount. Placing the
+        order redeems the coupon. A checkout that fails for any reason leaves
+        the coupon unredeemed.
+
+
         Every checkout needs an `Idempotency-Key` header. Keys are scoped to the
         customer. A retry with the same key and the same request returns the
         original status and body, even when the first attempt is still running:
@@ -597,6 +605,9 @@ components:
         - placedAt
         - lines
         - subtotalCents
+        - couponCode
+        - couponPercentOff
+        - discountCents
         - totalCents
       additionalProperties: false
       properties:
@@ -620,10 +631,27 @@ components:
           minimum: 0
           description: Sum of the line amounts in cents.
           example: 3350
+        couponCode:
+          type: string
+          nullable: true
+          description: The coupon the order redeemed, or null when it redeemed none.
+          example: K7HQ2XM9PA
+        couponPercentOff:
+          type: integer
+          minimum: 1
+          maximum: 100
+          nullable: true
+          description: The percentage the coupon took off the subtotal, or null when no coupon was redeemed.
+          example: 10
+        discountCents:
+          type: integer
+          minimum: 0
+          description: The coupon's percentage of the subtotal, rounded down to a whole cent. Zero when no coupon was redeemed.
+          example: 0
         totalCents:
           type: integer
           minimum: 0
-          description: The amount charged, in cents.
+          description: The amount charged, in cents. The subtotal less the discount.
           example: 3350
     CheckoutRequest:
       type: object
@@ -643,6 +671,16 @@ components:
             charge; tok_decline declines it, and the checkout is answered 402
             PAYMENT_DECLINED.
           example: tok_ok
+        couponCode:
+          type: string
+          minLength: 1
+          maxLength: 64
+          description: >-
+            The code of the one coupon this checkout redeems. An unknown code is
+            answered 422 COUPON_NOT_FOUND, a coupon issued to another customer
+            422 COUPON_NOT_OWNED, and a coupon already redeemed 422
+            COUPON_ALREADY_REDEEMED. Omit it for a checkout without a coupon.
+          example: K7HQ2XM9PA
     OrderList:
       type: object
       required:
@@ -782,6 +820,9 @@ components:
         - IDEMPOTENCY_KEY_REQUIRED
         - IDEMPOTENCY_KEY_REUSED
         - PAYMENT_DECLINED
+        - COUPON_NOT_FOUND
+        - COUPON_NOT_OWNED
+        - COUPON_ALREADY_REDEEMED
     Problem:
       type: object
       description: RFC 9457 Problem Details, extended with `code` and `requestId`.
@@ -866,7 +907,8 @@ components:
         The request is well formed but violates a business rule. CART_EMPTY
         means the cart has no lines, so there is nothing to order.
         IDEMPOTENCY_KEY_REUSED means the key was already used for a different
-        request.
+        request. COUPON_NOT_FOUND, COUPON_NOT_OWNED and COUPON_ALREADY_REDEEMED
+        mean the named coupon cannot be redeemed by this checkout.
       headers:
         X-Request-Id:
           $ref: '#/components/headers/RequestId'

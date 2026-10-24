@@ -16,6 +16,11 @@ export interface OrderView {
   placedAt: string;
   lines: OrderLineView[];
   subtotalCents: number;
+  /** The coupon the order redeemed, or null when it redeemed none. */
+  couponCode: string | null;
+  /** The percentage the coupon took off, or null when the order redeemed none. */
+  couponPercentOff: number | null;
+  discountCents: number;
   totalCents: number;
 }
 
@@ -24,6 +29,9 @@ interface OrderHeadRow {
   orderNumber: number;
   placedAt: Date;
   subtotalCents: number;
+  couponCode: string | null;
+  couponPercentOff: number | null;
+  discountCents: number;
   totalCents: number;
 }
 
@@ -32,7 +40,9 @@ interface OrderLineRow extends OrderLineView {
 }
 
 const HEAD_COLUMNS = `id, order_number AS "orderNumber", placed_at AS "placedAt",
-                      subtotal_cents AS "subtotalCents", total_cents AS "totalCents"`;
+                      subtotal_cents AS "subtotalCents", coupon_code AS "couponCode",
+                      coupon_percent_off AS "couponPercentOff",
+                      discount_cents AS "discountCents", total_cents AS "totalCents"`;
 
 /** Reads a placed order and its lines. The caller has already established that it may see the order. */
 export async function loadOrderView(runner: SqlRunner, orderId: string): Promise<OrderView> {
@@ -99,6 +109,9 @@ async function withLines(runner: SqlRunner, heads: readonly OrderHeadRow[]): Pro
         lineAmountCents,
       })),
     subtotalCents: head.subtotalCents,
+    couponCode: head.couponCode,
+    couponPercentOff: head.couponPercentOff,
+    discountCents: head.discountCents,
     totalCents: head.totalCents,
   }));
 }

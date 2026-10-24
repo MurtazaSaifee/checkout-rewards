@@ -49,6 +49,9 @@ describe('checking out a cart', () => {
         },
       ],
       subtotalCents: 3350,
+      couponCode: null,
+      couponPercentOff: null,
+      discountCents: 0,
       totalCents: 3350,
     });
   });
