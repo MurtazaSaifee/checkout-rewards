@@ -2,7 +2,7 @@
 
 A backend for an ecommerce store where customers keep carts and check out, and every nth placed order earns the customer who placed it a single-use discount coupon. The service is a TypeScript API on Postgres, with a small React app for trying it by hand.
 
-The API currently serves the product listing. The rest of the contract is added to `api/openapi.yaml` as each operation lands, and that file is the authoritative description of every endpoint, status code and error code.
+The API currently serves the product listing and customers' carts. The rest of the contract is added to `api/openapi.yaml` as each operation lands, and that file is the authoritative description of every endpoint, status code and error code.
 
 ## Quick start
 
@@ -88,6 +88,12 @@ The defaults are public development credentials. Compose and CI set their own va
   ```
 
   Set `BASE_URL` to target another stack (default `http://localhost:8080/api`).
+
+## Carts and customer identity
+
+Cart operations name the customer in the `X-Customer-Id` header, a value of 1 to 128 letters, digits, `.`, `_`, `:` or `-`. A request without the header, or with a blank one, is refused with `CUSTOMER_ID_REQUIRED`. The identifier is claimed, not verified: any caller can send any identifier. It keeps one customer's carts out of another's view in normal use, and it is not a security control.
+
+A cart line is set to a quantity, not added to. `PUT /api/carts/{cartId}/lines/{productId}` with `{"quantity": 2}` creates or replaces the line, so sending the same request again changes nothing. Quantities run from 1 to 99, and `DELETE` on the same path removes the line. Carts store no prices: every read shows the product's current unit price. Setting a line checks the requested quantity against stock but does not reduce stock.
 
 ## Errors and request identifiers
 

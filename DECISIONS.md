@@ -91,4 +91,84 @@ Schema changes are serialised too. The migration runner applies all pending file
 
 **Why:** The rule turns the status into a retry policy. A 400 or 422 means the same request will fail again and must change first. A 409 means re-reading state and trying again is reasonable. A 402 means the customer has to change the payment. A 404 keeps one customer's data from being detectable by another.
 
-**Consequences:** Clients can write one handler per status class. Today the service uses only 400, 404 (unknown routes) and 500; the other codes apply as the operations that need them land. Every new error must be assigned one of these meanings, and the contract's description states the rule so a reviewer can check it. The boundary between 409 and 422 takes judgement, and the rule is written down so that judgement is applied the same way each time.
+**Consequences:** Clients can write one handler per status class. Today the service uses 400, 404, 409 and 500; the other codes apply as the operations that need them land. Every new error must be assigned one of these meanings, and the contract's description states the rule so a reviewer can check it. The boundary between 409 and 422 takes judgement, and the rule is written down so that judgement is applied the same way each time.
+
+## Decision: Customer identity is claimed, not verified
+
+**Context:** Each cart belongs to one customer, and the API must know which customer a request is for. The service has no sign-in, so there is no verified identity to rely on.
+
+**Options considered:**
+
+1. Verify the customer with a token or session issued at sign-in.
+2. Accept a customer identifier in the `X-Customer-Id` header and trust it.
+3. Take the customer from the request path or body.
+
+**Choice:** Option 2. Every cart operation requires the `X-Customer-Id` header. A request without it, or with a blank value, is refused with `CUSTOMER_ID_REQUIRED` before any other check runs. A cart is found only when its owner matches the header, and a cart owned by someone else is reported as not found.
+
+The header is claimed, not verified: any caller can send any identifier. The rule keeps carts apart in ordinary use. It is not a security control.
+
+**Why:** A verified identity needs a sign-in mechanism that the service does not have yet. A header keeps customer data out of paths and bodies, and one middleware applies the rule to every cart route. The check runs before the contract validator, so a missing header gets its own code rather than a generic validation failure.
+
+**Consequences:** Anyone who knows a customer's identifier can read and change that customer's cart. The service must not rely on this header to protect money or personal data. When sign-in arrives, the header is replaced by a verified identity at the same point in the request pipeline, and the owner filter in the queries stays as it is.
+
+## Decision: Carts store no prices
+
+**Context:** A cart shows what a customer would pay. Prices change, and a cart can stay open for days, so a copied price can go out of date without anyone noticing.
+
+**Options considered:**
+
+1. Copy each product's unit price into the cart line when the line is set.
+2. Read each line's unit price from the product every time the cart is read.
+
+**Choice:** Option 2. A cart line stores only the product and the quantity. The unit price, line amount and subtotal are calculated from the current product price on every read and every change, by one pure module with no database access. Money is held as whole cents.
+
+**Why:** A stored price is a second copy of a fact that already lives in the products table, and the two copies drift apart. Reading the live price means a cart never shows a stale figure, and a price change needs no repair of existing carts. One arithmetic module means every total is computed the same way, and whole cents keep the arithmetic exact.
+
+**Consequences:** A cart's total can differ between two reads when a price changes between them. The figures shown in a cart are current estimates, not a promise of what a later purchase will cost. Every caller that needs a total uses the same module, so they agree with each other.
+
+## Decision: Lines are set to a quantity, not incremented
+
+**Context:** A client may send the same request twice when a connection drops, or two browser tabs may change the same line. If each request added its quantity to the line, a retry would count twice.
+
+**Options considered:**
+
+1. Add the quantity in each request to the line.
+2. Set the line to the quantity in the request, replacing whatever was there.
+
+**Choice:** Option 2. Setting a line creates it if needed and replaces its quantity, so sending the same request again leaves the cart unchanged. Removing a line deletes it, and removing a line that is already gone also succeeds. Quantities are whole numbers from 1 to 99. Zero is not a quantity: a client removes a line with the delete operation.
+
+**Why:** A replacement has the same effect however many times it arrives, so retries are safe. Concurrent identical requests leave one line, not several. The quantity a customer sees is the quantity the cart holds, which an increment cannot guarantee when two tabs are open. Refusing zero leaves one way to remove a line.
+
+**Consequences:** To add one more unit, a client must read the current quantity and send the new total. Two clients editing the same line race, and the last request wins. The limit of 99 is a business rule. Changing it means changing the contract, the schema check and the tests together.
+
+## Decision: Stock is checked when a line is set and taken at checkout
+
+**Context:** A customer who asks for more of a product than is in stock should learn that when they set the line, not at the end. Reserving stock for every open cart would let abandoned carts block other customers, and nothing signals when a cart has been abandoned.
+
+**Options considered:**
+
+1. Reserve stock when a line is set, and release it when the cart is abandoned.
+2. Check stock when a line is set without changing it, and take stock only at checkout.
+3. Do not check stock until checkout.
+
+**Choice:** Option 2. Setting a line compares the requested quantity with the product's current stock. If the quantity is higher, the request is refused with `INSUFFICIENT_STOCK` (409), and the body lists each short line with the quantity requested and the quantity available. The check changes nothing. Only checkout takes stock.
+
+**Why:** A reservation needs an expiry rule, and an abandoned cart gives no signal that it has been abandoned. Reserving on set would turn idle carts into lost sales for everyone else. The check still gives the customer early feedback at no cost to anyone. The guarantee that stock never goes negative does not rest on this check. It rests on the database constraint and on a conditional update at checkout.
+
+**Consequences:** A line that passes the check can still fail at checkout when another customer has bought the stock first. The check answers whether there is enough now, not whether there will be enough when the customer pays. Checkout must make its own conditional decrement and report a shortage when it finds one.
+
+## Decision: Cart changes are serialised on the cart row
+
+**Context:** A change to a cart reads the cart's status, checks the product and writes a line. If two changes to the same cart run together, one can check the cart before the other has written, and a line can be added to a cart that has just been checked out.
+
+**Options considered:**
+
+1. Lock the cart row with `SELECT ... FOR UPDATE` inside a transaction for each change.
+2. Give each cart a version number, and have clients retry when it has moved on.
+3. Run every transaction at the serialisable isolation level, and retry the ones Postgres aborts.
+
+**Choice:** Option 1. Each change to a cart runs in one transaction that first locks the cart row, and checkout takes the same lock. A change to a cart that is already checked out is refused with `CART_ALREADY_CHECKED_OUT` (409), and removing a line from such a cart is refused the same way.
+
+**Why:** A row lock is simple to read, and it is held only for the short duration of one change. A version number would make clients retry on every collision. Serialisable isolation makes Postgres abort some transactions, and each abort needs a retry. Locking the cart row serialises changes to one cart and leaves every other cart alone. The lock is held by the database, so it holds however many API instances connect.
+
+**Consequences:** Changes to the same cart wait for each other, so a slow change delays the rest. Changes to different carts never wait. Every operation that changes a cart must take the same lock, and a single helper takes it and checks that the cart is still open, so the cart changes and checkout share one definition of an editable cart.

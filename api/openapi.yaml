@@ -22,6 +22,11 @@ servers:
 tags:
   - name: products
     description: Catalogue browsing. Needs no customer identifier.
+  - name: carts
+    description: >-
+      A cart belongs to the customer who created it. Every operation with this
+      tag needs the customer identifier header, and another customer's cart is
+      answered as not found.
   - name: admin
     description: >-
       Store administration. Operations with this tag are restricted to the
@@ -49,6 +54,131 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '500':
           $ref: '#/components/responses/InternalError'
+  /carts:
+    post:
+      tags:
+        - carts
+      operationId: createCart
+      summary: Create an empty cart owned by the calling customer.
+      description: >-
+        Not idempotent. A retried request creates another empty cart, which
+        does no harm.
+      parameters:
+        - $ref: '#/components/parameters/RequestIdHeader'
+        - $ref: '#/components/parameters/CustomerIdHeader'
+      responses:
+        '201':
+          description: The new empty cart.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Cart'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /carts/{cartId}:
+    get:
+      tags:
+        - carts
+      operationId: getCart
+      summary: View a cart with current prices, line amounts, subtotal and line count.
+      description: >-
+        Prices are read from the products when the cart is viewed. A cart
+        stores no prices.
+      parameters:
+        - $ref: '#/components/parameters/RequestIdHeader'
+        - $ref: '#/components/parameters/CustomerIdHeader'
+        - $ref: '#/components/parameters/CartId'
+      responses:
+        '200':
+          description: The cart.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Cart'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /carts/{cartId}/lines/{productId}:
+    put:
+      tags:
+        - carts
+      operationId: setCartLineQuantity
+      summary: Set the quantity of a product in the cart, creating the line if needed.
+      description: >-
+        Idempotent. The quantity is replaced, not added to, so repeating the
+        request leaves the cart unchanged. Stock is checked here as a courtesy
+        only: it is taken at checkout, not when a line is set.
+      parameters:
+        - $ref: '#/components/parameters/RequestIdHeader'
+        - $ref: '#/components/parameters/CustomerIdHeader'
+        - $ref: '#/components/parameters/CartId'
+        - $ref: '#/components/parameters/ProductId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetLineQuantity'
+      responses:
+        '200':
+          description: The cart after the change.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Cart'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    delete:
+      tags:
+        - carts
+      operationId: removeCartLine
+      summary: Remove a product's line from the cart.
+      description: >-
+        Removing a line that is already gone succeeds and returns the cart
+        unchanged.
+      parameters:
+        - $ref: '#/components/parameters/RequestIdHeader'
+        - $ref: '#/components/parameters/CustomerIdHeader'
+        - $ref: '#/components/parameters/CartId'
+        - $ref: '#/components/parameters/ProductId'
+      responses:
+        '200':
+          description: The cart after the change.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Cart'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
 components:
   securitySchemes:
     adminKey:
@@ -65,6 +195,33 @@ components:
         Optional identifier echoed back in the response and in error bodies.
         Identifiers that are not 1 to 128 characters of letters, digits, dot,
         underscore, colon or hyphen are replaced with a generated one.
+      schema:
+        type: string
+    CustomerIdHeader:
+      name: X-Customer-Id
+      in: header
+      required: true
+      description: >-
+        Identifies the calling customer. Every cart operation requires it; a
+        request without it is answered 400 CUSTOMER_ID_REQUIRED. The identifier
+        is claimed, not verified, so it is a business rule and not a security
+        control.
+      schema:
+        type: string
+        pattern: '^[A-Za-z0-9._:-]{1,128}$'
+    CartId:
+      name: cartId
+      in: path
+      required: true
+      description: Identifier of the cart, as returned when it was created.
+      schema:
+        type: string
+        format: uuid
+    ProductId:
+      name: productId
+      in: path
+      required: true
+      description: Stable product identifier, as listed by GET /products.
       schema:
         type: string
   headers:
@@ -109,6 +266,82 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/Product'
+    CartLine:
+      type: object
+      required:
+        - productId
+        - name
+        - unitPriceCents
+        - quantity
+        - lineAmountCents
+      additionalProperties: false
+      properties:
+        productId:
+          type: string
+          example: ceramic-mug
+        name:
+          type: string
+          example: Ceramic Mug
+        unitPriceCents:
+          type: integer
+          minimum: 0
+          description: Current unit price of the product in cents, not the price when the line was set.
+          example: 1200
+        quantity:
+          type: integer
+          minimum: 1
+          maximum: 99
+          example: 2
+        lineAmountCents:
+          type: integer
+          minimum: 0
+          description: Unit price in cents multiplied by quantity.
+          example: 2400
+    Cart:
+      type: object
+      required:
+        - id
+        - status
+        - lines
+        - lineCount
+        - subtotalCents
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum:
+            - open
+            - checked_out
+          description: A checked-out cart can no longer be changed.
+        lines:
+          type: array
+          items:
+            $ref: '#/components/schemas/CartLine'
+        lineCount:
+          type: integer
+          minimum: 0
+          description: Number of lines in the cart.
+          example: 2
+        subtotalCents:
+          type: integer
+          minimum: 0
+          description: Sum of the line amounts in cents.
+          example: 3600
+    SetLineQuantity:
+      type: object
+      required:
+        - quantity
+      additionalProperties: false
+      properties:
+        quantity:
+          type: integer
+          minimum: 1
+          maximum: 99
+          description: Whole number of units from 1 to 99. Replaces any quantity already in the cart.
+          example: 2
     ErrorCode:
       type: string
       description: Stable machine-readable error identifier.
@@ -116,7 +349,15 @@ components:
         - VALIDATION_FAILED
         - MALFORMED_JSON
         - ROUTE_NOT_FOUND
+        - METHOD_NOT_ALLOWED
+        - PAYLOAD_TOO_LARGE
+        - UNSUPPORTED_MEDIA_TYPE
         - INTERNAL_ERROR
+        - CUSTOMER_ID_REQUIRED
+        - CART_NOT_FOUND
+        - CART_ALREADY_CHECKED_OUT
+        - PRODUCT_NOT_FOUND
+        - INSUFFICIENT_STOCK
     Problem:
       type: object
       description: RFC 9457 Problem Details, extended with `code` and `requestId`.
@@ -152,6 +393,31 @@ components:
   responses:
     BadRequest:
       description: 'Malformed request: bad JSON, unknown or invalid parameters, or a missing required header.'
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/RequestId'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    NotFound:
+      description: >-
+        A resource is missing or not visible to the caller. CART_NOT_FOUND
+        covers a cart that does not exist and a cart that belongs to another
+        customer alike. PRODUCT_NOT_FOUND names an unknown product.
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/RequestId'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Conflict:
+      description: >-
+        The request conflicts with the current state and may succeed later
+        after the client re-reads the resource. CART_ALREADY_CHECKED_OUT means
+        the cart was checked out. INSUFFICIENT_STOCK lists each short line in
+        shortLines, with the requested and available quantities.
       headers:
         X-Request-Id:
           $ref: '#/components/headers/RequestId'
