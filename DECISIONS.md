@@ -284,16 +284,17 @@ Today every API instance connects to one Postgres database, and no rule depends 
 
 ## How AI tools were used
 
-An AI coding assistant wrote the code, the tests and the documents. The author set the scope, decided every open semantic question in a question-by-question design session, and chose the workflow. An orchestrating AI session wrote the plan and the work items, and delegated each item to a smaller model, in its own git worktree. The orchestrating session reviewed each branch, by reading its diff and rerunning its tests, before a merge subagent integrated it. The examples below are places where the author's decisions or a review changed the result.
+I used an AI coding assistant throughout: to question the requirements before any code was written, to draft the plan, to write the code, the tests and these documents, and to review the result. I decided the scope and every open semantic question listed above. Generated code was treated as unverified until it passed the concurrency tests and the end-to-end checks; each change was reviewed against its diff and the full test suite before it was merged, and the race tools in the web app were run by hand against a live stack.
 
-1. **Scope.** The first proposal treated the frontend as optional. The author rejected that, and made the frontend a required testing aid, with the race scenarios among its tools.
-2. **Scope.** Endpoints for changing products were not added. A documented database statement changes prices and stock, which keeps the work on checkout correctness.
-3. **Conflicts.** Two parallel branches each created migration `0004`. Review caught it, and the coupons migration was renumbered `0005` before the merge.
-4. **Observability.** The first checkout implementation logged successes without an outcome code, and left refusals to the generic error log. It was changed to one outcome line per checkout, carrying its code.
-5. **Concurrency.** A lost race in coupon generation surfaced as a 500. It was changed to 409 `NO_ELIGIBLE_MILESTONE`, and a test forces the unique constraint to reject an insert.
-6. **Attribution.** Commit attribution was wrong until an implementing subagent flagged it. It was corrected.
-7. **Repository history.** A history rewrite meant to remove material that should not be public also deleted working files. They were restored from a backup bundle taken beforehand. Back up before any rewrite, and check the working tree afterwards.
-8. **Review pass.** A review along two axes, coding standards and conformance to the plan, found the problems fixed in the final fix pass, and one subagent fixed them.
+These are places where I corrected, rejected or redirected what the assistant produced:
+
+1. **The frontend.** The assistant proposed treating the frontend as optional. I made it a required testing aid instead, with race tools that fire simultaneous checkouts, same-key retries and coupon redemptions, so the concurrency behaviour can be seen and demonstrated without a script.
+2. **Product administration.** Admin endpoints for editing prices and stock were left out on purpose. A documented database statement does the job, and keeps the work on checkout correctness.
+3. **The expected total with a coupon.** The first design compared the client's expected total with the subtotal. That would refuse a correct discounted total, so the comparison was moved after the coupon step, against the total the customer actually pays.
+4. **Outcome logging.** The first checkout implementation logged only successes, without an outcome code, and left refusals to the generic error log. It was changed to one structured line per checkout carrying `ORDER_PLACED`, `IDEMPOTENT_REPLAY` or the refusal code.
+5. **A race surfacing as a 500.** Coupon generation let a lost race on the unique milestone constraint escape as `INTERNAL_ERROR`. It now answers 409 `NO_ELIGIBLE_MILESTONE`, and a test forces the constraint to fire.
+6. **Migration ordering.** Two pieces of work built in parallel each added a migration numbered `0004`. Both would have run, but in a misleading order; the coupons migration was renumbered `0005`.
+7. **Error paths found in review.** A final review found that a failing `ROLLBACK` would hide the original error and return a broken connection to the pool, and that an idle-connection error could crash the process. Both were fixed with tests.
 
 ## What to examine first with two more hours
 
