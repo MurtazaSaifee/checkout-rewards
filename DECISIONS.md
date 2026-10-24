@@ -153,6 +153,18 @@ Each decision gives the context, the options weighed, the choice, the reasons an
 
 **Consequences.** Anyone who can set the customer header acts as that customer, and anyone who holds the admin key is an administrator. The admin key is not a security control. The default `local-admin-key` is a public development value, so a deployment that keeps the defaults is not safe.
 
+### 8. Payment goes through a small gateway interface with an in-process fake
+
+**Context.** No real payment integration is required. The question is whether checkout should assume payment always succeeds, or model a payment step that can fail. The coupon and stock rules matter most exactly when a checkout fails late: a coupon must not be lost, and stock must not be taken, by a checkout that does not complete.
+
+**Options considered.** (a) Treat every checkout as paid. This is simplest, but nothing then fails after stock and the coupon have been claimed, so the rollback path that protects them is never exercised. (b) A `PaymentGateway` interface with a fake that approves `tok_ok` and declines `tok_decline`, chosen by the client in the checkout body. (c) A sandbox account with a real provider. That needs credentials and network access, which an evaluator should not need.
+
+**Choice.** (b). Checkout charges the gateway after stock, the coupon and the price guard, and before the order number is taken. A decline answers 402 `PAYMENT_DECLINED`. The gateway is passed to the application factory, so tests can substitute one that fails in other ways.
+
+**Why.** A decline is the most realistic late failure, and it makes the "a failed checkout leaves nothing behind" invariant testable from the API: a declined checkout with a coupon leaves the coupon unredeemed and the stock unchanged, and the same cart then succeeds with `tok_ok`. The same seam lets a test inject a gateway that throws, which checks that an unexpected 500 also rolls back.
+
+**Consequences.** The charge runs inside the checkout transaction, which is honest only because the fake is instant and cannot half-succeed. A real provider changes that: a charge can succeed after the transaction rolls back, and a slow call holds the cart and stock locks. The two-phase payment flow under "Beyond one instance" is the production answer, and it is the largest change deferred.
+
 ## Transactions, concurrency and idempotency
 
 **Isolation.** Writes run at Postgres's default, READ COMMITTED. A statement sees the rows committed before it starts. An update or `SELECT ... FOR UPDATE` that waited on a row re-checks the newest committed version of that row once the lock is released, so a waiter does not act on a state its holder replaced. The report is the one exception: it runs at `REPEATABLE READ READ ONLY` so that its figures come from a single snapshot. No other isolation level is set, and no statement or lock timeout is set.
