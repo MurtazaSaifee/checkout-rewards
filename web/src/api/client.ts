@@ -16,6 +16,10 @@ export type CouponList = components['schemas']['CouponList'];
 export type GeneratedCoupon = components['schemas']['GeneratedCoupon'];
 export type AdminCoupon = components['schemas']['AdminCoupon'];
 export type AdminCouponList = components['schemas']['AdminCouponList'];
+export type AdminOrder = components['schemas']['AdminOrder'];
+export type AdminOrderList = components['schemas']['AdminOrderList'];
+export type UnitsSold = components['schemas']['UnitsSold'];
+export type Report = components['schemas']['Report'];
 
 /** Thrown for any non-2xx answer. Keeps the full body so the UI can show it raw. */
 export class ApiError extends Error {
@@ -191,6 +195,24 @@ export async function listAllCoupons(adminKey: string, signal?: AbortSignal): Pr
     signal,
   });
   return readJson<AdminCouponList>(response);
+}
+
+/** The administrator's report: counts and totals, calculated from orders and coupons on each request. */
+export async function getReport(adminKey: string, signal?: AbortSignal): Promise<Report> {
+  const response = await fetch(`${API_BASE}/admin/report`, {
+    headers: adminHeaders(adminKey),
+    signal,
+  });
+  return readJson<Report>(response);
+}
+
+/** Every order placed by any customer, oldest first, each with the customer it belongs to. */
+export async function listAllOrders(adminKey: string, signal?: AbortSignal): Promise<AdminOrderList> {
+  const response = await fetch(`${API_BASE}/admin/orders`, {
+    headers: adminHeaders(adminKey),
+    signal,
+  });
+  return readJson<AdminOrderList>(response);
 }
 
 async function readJson<T>(response: Response): Promise<T> {
