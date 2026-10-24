@@ -1,4 +1,4 @@
-import { DomainError, type ErrorCode } from '../errors.js';
+import { DomainError, type ErrorCode, type HttpErrorCode } from '../errors.js';
 
 /** Stable, dereference-free prefix for the RFC 9457 `type` member. */
 const PROBLEM_TYPE_BASE = 'https://checkout-rewards.example/problems/';
@@ -27,7 +27,7 @@ interface Described {
 }
 
 /** Titles for errors raised outside the domain (contract, parser, router). */
-const GENERIC_TITLES: Record<ErrorCode, string> = {
+const GENERIC_TITLES: Record<HttpErrorCode, string> = {
   VALIDATION_FAILED: 'Request validation failed',
   MALFORMED_JSON: 'Malformed JSON',
   ROUTE_NOT_FOUND: 'Route not found',
@@ -38,7 +38,7 @@ const GENERIC_TITLES: Record<ErrorCode, string> = {
 };
 
 /** Maps an HTTP status raised by the contract validator or body parser to a code. */
-const CODE_BY_STATUS: Partial<Record<number, ErrorCode>> = {
+const CODE_BY_STATUS: Partial<Record<number, HttpErrorCode>> = {
   400: 'VALIDATION_FAILED',
   404: 'ROUTE_NOT_FOUND',
   405: 'METHOD_NOT_ALLOWED',

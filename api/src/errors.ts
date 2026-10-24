@@ -1,8 +1,5 @@
-/**
- * Every stable error code a client can receive. The ErrorCode enum in
- * api/openapi.yaml must list the same values.
- */
-export type ErrorCode =
+/** Codes raised outside the domain: by the contract validator, the body parser, the router and the fallback. */
+export type HttpErrorCode =
   | 'VALIDATION_FAILED'
   | 'MALFORMED_JSON'
   | 'ROUTE_NOT_FOUND'
@@ -10,6 +7,20 @@ export type ErrorCode =
   | 'PAYLOAD_TOO_LARGE'
   | 'UNSUPPORTED_MEDIA_TYPE'
   | 'INTERNAL_ERROR';
+
+/** Codes raised by domain modules. */
+export type DomainErrorCode =
+  | 'CUSTOMER_ID_REQUIRED'
+  | 'CART_NOT_FOUND'
+  | 'CART_ALREADY_CHECKED_OUT'
+  | 'PRODUCT_NOT_FOUND'
+  | 'INSUFFICIENT_STOCK';
+
+/**
+ * Every stable error code a client can receive. The ErrorCode enum in
+ * api/openapi.yaml must list the same values.
+ */
+export type ErrorCode = HttpErrorCode | DomainErrorCode;
 
 export interface DomainErrorInit {
   status: number;
