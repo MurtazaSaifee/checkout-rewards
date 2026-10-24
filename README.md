@@ -103,6 +103,8 @@ Every checkout request must send an `Idempotency-Key` header, 1 to 128 letters, 
 
 If any line is short, the response is `409 INSUFFICIENT_STOCK`, and its `shortLines` list every short line with the quantity requested and the quantity available. A failed checkout takes no order number, so numbers run 1, 2, 3 with no gaps. A cart is checked out once: a second attempt, or a change to the cart afterwards, is refused with `CART_ALREADY_CHECKED_OUT`.
 
+The checkout body may name a `paymentToken`. `tok_ok`, the default, approves the charge, and `tok_decline` declines it, which is answered `402 PAYMENT_DECLINED`. The payment gateway is an in-process fake that moves no money, so the token alone decides the outcome. A declined checkout changes nothing, like any refused checkout: stock, the cart and the order numbers are as they were, and the same cart can be checked out again.
+
 An order keeps the names, unit prices and totals it had when it was placed, so later price or name changes do not alter it. `GET /api/orders` lists the calling customer's orders, and `GET /api/orders/{orderId}` returns one. An order that belongs to another customer is reported as `ORDER_NOT_FOUND`, the same as an order that does not exist.
 
 ## Errors and request identifiers
