@@ -15,6 +15,7 @@ import { couponsRouter } from './modules/coupons/coupons.routes.js';
 import { ordersRouter } from './modules/orders/orders.routes.js';
 import { type PaymentGateway } from './modules/payments/payment-gateway.js';
 import { productsRouter } from './modules/products/products.routes.js';
+import { reportingRouter } from './modules/reporting/reporting.routes.js';
 
 export interface AppDependencies {
   db: Pool;
@@ -48,6 +49,7 @@ export function createApp(deps: AppDependencies): Express {
   app.use('/api', checkoutRouter(deps.db, deps.payments));
   app.use('/api', ordersRouter(deps.db));
   app.use('/api', couponsRouter(deps.db, deps.coupons));
+  app.use('/api', reportingRouter(deps.db, deps.coupons));
 
   app.use(notFoundHandler);
   app.use(problemErrorHandler);

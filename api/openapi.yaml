@@ -383,6 +383,69 @@ paths:
           $ref: '#/components/responses/Conflict'
         '500':
           $ref: '#/components/responses/InternalError'
+  /admin/orders:
+    get:
+      tags:
+        - admin
+      operationId: listAllOrders
+      summary: List every placed order with its customer, lines and totals.
+      description: >-
+        Every customer's orders, in order-number order, so the report can be
+        checked against them. Each order carries the customer it belongs to.
+      security:
+        - adminKey: []
+      parameters:
+        - $ref: '#/components/parameters/RequestIdHeader'
+      responses:
+        '200':
+          description: Every order, oldest first.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminOrderList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /admin/report:
+    get:
+      tags:
+        - admin
+      operationId: getReport
+      summary: Report sales and coupons, calculated from the orders and coupons on every request.
+      description: >-
+        Read-only. Every figure is computed from the placed orders, their lines
+        and the coupons when the request arrives, so nothing is stored and
+        reading the report changes nothing. All money is in integer cents.
+        Net revenue is the sum of the order totals, which equals gross revenue
+        less discounts because each order's total is its subtotal less its
+        discount. Unrewarded milestones are the milestones reached by the
+        order count, less the coupons generated.
+      security:
+        - adminKey: []
+      parameters:
+        - $ref: '#/components/parameters/RequestIdHeader'
+      responses:
+        '200':
+          description: The report, as of the moment the request was read.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Report'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
 components:
   securitySchemes:
     adminKey:
@@ -807,6 +870,160 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/AdminCoupon'
+    AdminOrder:
+      type: object
+      description: A placed order as the administrator sees it, with the customer it belongs to.
+      required:
+        - id
+        - orderNumber
+        - customerId
+        - placedAt
+        - lines
+        - subtotalCents
+        - couponCode
+        - couponPercentOff
+        - discountCents
+        - totalCents
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+          format: uuid
+        orderNumber:
+          type: integer
+          minimum: 1
+          description: Position in the sequence of all orders placed, starting at 1 with no gaps.
+          example: 1
+        customerId:
+          type: string
+          description: The customer who placed the order.
+          example: alice
+        placedAt:
+          type: string
+          format: date-time
+        lines:
+          type: array
+          items:
+            $ref: '#/components/schemas/OrderLine'
+        subtotalCents:
+          type: integer
+          minimum: 0
+          description: Sum of the line amounts in cents.
+          example: 3350
+        couponCode:
+          type: string
+          nullable: true
+          description: The coupon the order redeemed, or null when it redeemed none.
+          example: K7HQ2XM9PA
+        couponPercentOff:
+          type: integer
+          minimum: 1
+          maximum: 100
+          nullable: true
+          description: The percentage the coupon took off the subtotal, or null when no coupon was redeemed.
+          example: 10
+        discountCents:
+          type: integer
+          minimum: 0
+          description: The coupon's percentage of the subtotal, rounded down to a whole cent. Zero when no coupon was redeemed.
+          example: 0
+        totalCents:
+          type: integer
+          minimum: 0
+          description: The amount charged, in cents. The subtotal less the discount.
+          example: 3350
+    AdminOrderList:
+      type: object
+      required:
+        - orders
+      additionalProperties: false
+      properties:
+        orders:
+          type: array
+          items:
+            $ref: '#/components/schemas/AdminOrder'
+    UnitsSold:
+      type: object
+      required:
+        - productId
+        - name
+        - quantity
+      additionalProperties: false
+      properties:
+        productId:
+          type: string
+          example: ceramic-mug
+        name:
+          type: string
+          description: The product's current name.
+          example: Ceramic Mug
+        quantity:
+          type: integer
+          minimum: 1
+          description: Units of the product on placed orders.
+          example: 3
+    Report:
+      type: object
+      description: >-
+        Sales and reward figures for the store, calculated on each request.
+        Net revenue equals gross revenue less discounts.
+      required:
+        - orderCount
+        - unitsSold
+        - grossRevenueCents
+        - discountCents
+        - netRevenueCents
+        - couponsGenerated
+        - couponsRedeemed
+        - couponsAvailable
+        - unrewardedMilestones
+      additionalProperties: false
+      properties:
+        orderCount:
+          type: integer
+          minimum: 0
+          description: Number of placed orders.
+          example: 3
+        unitsSold:
+          type: array
+          description: Products with at least one unit on a placed order, in product identifier order.
+          items:
+            $ref: '#/components/schemas/UnitsSold'
+        grossRevenueCents:
+          type: integer
+          minimum: 0
+          description: Sum of the order subtotals, before discounts.
+          example: 7750
+        discountCents:
+          type: integer
+          minimum: 0
+          description: Sum of the order discounts.
+          example: 95
+        netRevenueCents:
+          type: integer
+          minimum: 0
+          description: Sum of the order totals, which is gross revenue less discounts.
+          example: 7655
+        couponsGenerated:
+          type: integer
+          minimum: 0
+          description: Coupons issued so far.
+          example: 1
+        couponsRedeemed:
+          type: integer
+          minimum: 0
+          description: Coupons redeemed by an order.
+          example: 1
+        couponsAvailable:
+          type: integer
+          minimum: 0
+          description: Coupons issued and not yet redeemed.
+          example: 0
+        unrewardedMilestones:
+          type: integer
+          minimum: 0
+          description: Milestones reached by the order count that have no coupon yet.
+          example: 0
     ErrorCode:
       type: string
       description: Stable machine-readable error identifier.

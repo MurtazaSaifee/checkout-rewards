@@ -50,7 +50,7 @@ export async function loadOrderView(runner: SqlRunner, orderId: string): Promise
     `SELECT ${HEAD_COLUMNS} FROM orders WHERE id = $1`,
     [orderId],
   );
-  const [view] = await withLines(runner, rows);
+  const [view] = await withLines(runner, rows, orderViewOf);
   if (view === undefined) {
     throw new Error(`order ${orderId} vanished while it was being read`);
   }
@@ -67,7 +67,7 @@ export async function findOwnedOrderView(
     `SELECT ${HEAD_COLUMNS} FROM orders WHERE id = $1 AND customer_id = $2`,
     [orderId, customerId],
   );
-  const [view] = await withLines(runner, rows);
+  const [view] = await withLines(runner, rows, orderViewOf);
   return view;
 }
 
@@ -77,11 +77,34 @@ export async function listOwnedOrderViews(runner: SqlRunner, customerId: string)
     `SELECT ${HEAD_COLUMNS} FROM orders WHERE customer_id = $1 ORDER BY order_number`,
     [customerId],
   );
-  return withLines(runner, rows);
+  return withLines(runner, rows, orderViewOf);
 }
 
-/** Attaches each order's lines to its head, with two statements however many orders there are. */
-async function withLines(runner: SqlRunner, heads: readonly OrderHeadRow[]): Promise<OrderView[]> {
+/** The view of one order as a customer sees it: its head, and the lines it had at checkout. */
+function orderViewOf(head: OrderHeadRow, lines: OrderLineView[]): OrderView {
+  return {
+    id: head.id,
+    orderNumber: head.orderNumber,
+    placedAt: head.placedAt.toISOString(),
+    lines,
+    subtotalCents: head.subtotalCents,
+    couponCode: head.couponCode,
+    couponPercentOff: head.couponPercentOff,
+    discountCents: head.discountCents,
+    totalCents: head.totalCents,
+  };
+}
+
+/**
+ * Attaches each order's lines to its head, with two statements however many orders
+ * there are, and builds each view with viewOf. The lines are read in one query and
+ * matched to their heads, so every caller shares the same line handling.
+ */
+async function withLines<Head extends OrderHeadRow, View>(
+  runner: SqlRunner,
+  heads: readonly Head[],
+  viewOf: (head: Head, lines: OrderLineView[]) => View,
+): Promise<View[]> {
   if (heads.length === 0) {
     return [];
   }
@@ -95,23 +118,38 @@ async function withLines(runner: SqlRunner, heads: readonly OrderHeadRow[]): Pro
     [heads.map((head) => head.id)],
   );
 
-  return heads.map((head) => ({
-    id: head.id,
-    orderNumber: head.orderNumber,
-    placedAt: head.placedAt.toISOString(),
-    lines: lines
-      .filter((line) => line.orderId === head.id)
-      .map(({ productId, name, unitPriceCents, quantity, lineAmountCents }) => ({
-        productId,
-        name,
-        unitPriceCents,
-        quantity,
-        lineAmountCents,
-      })),
-    subtotalCents: head.subtotalCents,
-    couponCode: head.couponCode,
-    couponPercentOff: head.couponPercentOff,
-    discountCents: head.discountCents,
-    totalCents: head.totalCents,
+  return heads.map((head) =>
+    viewOf(
+      head,
+      lines
+        .filter((line) => line.orderId === head.id)
+        .map(({ productId, name, unitPriceCents, quantity, lineAmountCents }) => ({
+          productId,
+          name,
+          unitPriceCents,
+          quantity,
+          lineAmountCents,
+        })),
+    ),
+  );
+}
+
+/** A placed order as the administrator sees it: the order a customer views, and the customer it belongs to. */
+export interface AdminOrderView extends OrderView {
+  customerId: string;
+}
+
+interface AdminOrderHeadRow extends OrderHeadRow {
+  customerId: string;
+}
+
+/** Every placed order with the customer it belongs to, in order-number order. For the administrator only. */
+export async function listAllOrderViews(runner: SqlRunner): Promise<AdminOrderView[]> {
+  const { rows } = await runner.query<AdminOrderHeadRow>(
+    `SELECT ${HEAD_COLUMNS}, customer_id AS "customerId" FROM orders ORDER BY order_number`,
+  );
+  return withLines(runner, rows, (head, lines) => ({
+    ...orderViewOf(head, lines),
+    customerId: head.customerId,
   }));
 }

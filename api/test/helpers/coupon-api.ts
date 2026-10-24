@@ -1,15 +1,12 @@
-import request, { type Test } from 'supertest';
+import request from 'supertest';
 import type { Express } from 'express';
 import { TEST_ADMIN_KEY } from './test-database.js';
+import { withAdminKey } from './admin-api.js';
 
 /**
  * Thin wrappers over the coupon endpoints. Each returns the raw response so tests can assert on it.
  * Pass adminKey as null to send no admin key header at all.
  */
-
-function withAdminKey(test: Test, adminKey: string | null): Test {
-  return adminKey === null ? test : test.set('X-Admin-Key', adminKey);
-}
 
 export function generateCoupon(app: Express, adminKey: string | null = TEST_ADMIN_KEY) {
   return withAdminKey(request(app).post('/api/admin/coupons'), adminKey);

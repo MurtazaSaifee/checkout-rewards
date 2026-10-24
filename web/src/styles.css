@@ -53,6 +53,22 @@ th:nth-child(4) {
   font-variant-numeric: tabular-nums;
 }
 
+/* Admin tables: text is left-aligned, and only the cells marked numeric are right-aligned. */
+.admin-table th,
+.admin-table td {
+  text-align: left;
+}
+
+.admin-table .numeric {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* A wide table scrolls inside its own wrapper, so a narrow screen never scrolls the whole page sideways. */
+.table-scroll {
+  overflow-x: auto;
+}
+
 button {
   font: inherit;
   padding: 0.4rem 0.8rem;

@@ -84,3 +84,28 @@ export interface AdminCoupon {
   issuedAt: string;
   redeemedByOrderId: string | null;
 }
+
+/** An order as the administrator sees it: the order a customer views, with the customer it belongs to. */
+export interface AdminOrder extends Order {
+  customerId: string;
+}
+
+/** The units sold of one product across every placed order. */
+export interface UnitsSold {
+  productId: string;
+  name: string;
+  quantity: number;
+}
+
+/** The admin report, calculated from orders and coupons on every request. */
+export interface Report {
+  orderCount: number;
+  unitsSold: UnitsSold[];
+  grossRevenueCents: number;
+  discountCents: number;
+  netRevenueCents: number;
+  couponsGenerated: number;
+  couponsRedeemed: number;
+  couponsAvailable: number;
+  unrewardedMilestones: number;
+}
