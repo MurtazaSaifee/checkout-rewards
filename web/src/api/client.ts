@@ -96,8 +96,9 @@ export async function removeCartLine(
  * Places the order for the cart in full, or changes nothing. The key names this attempt:
  * a retry with the same key gets the same answer back. The payment token is the gateway's
  * answer for this attempt. The expected total, when given, is the total the customer saw:
- * a different total at current prices is refused with PRICE_CHANGED. A refusal, including
- * a declined payment, comes back as an ApiError.
+ * a different total at current prices is refused with PRICE_CHANGED. The coupon code, when
+ * given, is the customer's coupon to redeem with this order. A refusal, including a declined
+ * payment, comes back as an ApiError.
  */
 export async function checkOutCart(
   customerId: string,
@@ -105,8 +106,14 @@ export async function checkOutCart(
   idempotencyKey: string,
   paymentToken: PaymentToken,
   expectedTotalCents?: number,
+  couponCode?: string,
   signal?: AbortSignal,
 ): Promise<Order> {
+  const body: { paymentToken: PaymentToken; expectedTotalCents?: number; couponCode?: string } = {
+    paymentToken,
+  };
+  if (expectedTotalCents !== undefined) body.expectedTotalCents = expectedTotalCents;
+  if (couponCode !== undefined) body.couponCode = couponCode;
   const response = await fetch(`${API_BASE}/carts/${cartId}/checkout`, {
     method: 'POST',
     headers: {
@@ -114,9 +121,7 @@ export async function checkOutCart(
       'Content-Type': 'application/json',
       'Idempotency-Key': idempotencyKey,
     },
-    body: JSON.stringify(
-      expectedTotalCents === undefined ? { paymentToken } : { paymentToken, expectedTotalCents },
-    ),
+    body: JSON.stringify(body),
     signal,
   });
   return readJson<Order>(response);

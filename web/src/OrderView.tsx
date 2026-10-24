@@ -78,6 +78,16 @@ function OrderDetail({ customer, orderId }: { customer: CustomerId; orderId: str
       <dl>
         <dt>subtotal</dt>
         <dd>{formatCents(order.subtotalCents)}</dd>
+        {order.couponCode !== null ? (
+          <>
+            <dt>coupon</dt>
+            <dd>
+              <code>{order.couponCode}</code> ({order.couponPercentOff}% off)
+            </dd>
+            <dt>discount</dt>
+            <dd>−{formatCents(order.discountCents)}</dd>
+          </>
+        ) : null}
         <dt>total</dt>
         <dd>{formatCents(order.totalCents)}</dd>
       </dl>

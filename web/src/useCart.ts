@@ -5,6 +5,7 @@ import {
   createCart,
   currentTotalOf,
   getCart,
+  listMyCoupons,
   newIdempotencyKey,
   type Order,
   type PaymentToken,
@@ -12,6 +13,7 @@ import {
   setCartLineQuantity,
 } from './api/client';
 import { type CustomerId, loadCartId, saveCartId } from './customer';
+import { discountCents } from './money';
 
 /** What the cart panel shows for one customer. */
 export type CartState =
@@ -30,7 +32,8 @@ export interface CartController {
   refresh: () => void;
   setQuantity: (productId: string, quantity: number) => void;
   removeLine: (productId: string) => void;
-  checkOut: (paymentToken: PaymentToken) => void;
+  /** Checks out the cart, redeeming the named coupon when a code is given. */
+  checkOut: (paymentToken: PaymentToken, couponCode?: string) => void;
 }
 
 export interface CartOptions {
@@ -126,15 +129,20 @@ export function useCart(customer: CustomerId, options: CartOptions): CartControl
     [customer, edit],
   );
 
-  const checkOut = useCallback((paymentToken: PaymentToken) => {
+  const checkOut = useCallback((paymentToken: PaymentToken, couponCode?: string) => {
     if (state.kind !== 'ready') return;
     const cartId = state.cart.id;
-    // The total the cart view shows is the total the customer is checking out at.
-    const expectedTotalCents = state.cart.subtotalCents;
+    const subtotalCents = state.cart.subtotalCents;
     setEditError(undefined);
     setCheckoutError(undefined);
-    // Each click is a new attempt, so it gets a new key.
-    checkOutCart(customer, cartId, newIdempotencyKey(), paymentToken, expectedTotalCents).then(
+    // Each click is a new attempt, so it gets a new key. The expected total is the total
+    // the customer is checking out at, which is the discounted one when a coupon applies.
+    const key = newIdempotencyKey();
+    expectedTotalFor(customer, subtotalCents, couponCode)
+      .then((expectedTotalCents) =>
+        checkOutCart(customer, cartId, key, paymentToken, expectedTotalCents, couponCode),
+      )
+      .then(
       (order) => {
         onOrderPlaced(order);
         // The cart is checked out now. Read it back, so the panel shows the server's state.
@@ -166,4 +174,21 @@ export function useCart(customer: CustomerId, options: CartOptions): CartControl
   }, [customer, onOrderPlaced, state]);
 
   return { state, editError, checkoutError, createNewCart, refresh, setQuantity, removeLine, checkOut };
+}
+
+/**
+ * The total the customer checks out at: the subtotal, less the coupon's discount when a
+ * coupon is named. The discount comes from the customer's own coupon list. A code that is
+ * not an unredeemed coupon of the customer has no discount to show, so no expected total is
+ * sent, and the server refuses the coupon itself with its own error.
+ */
+async function expectedTotalFor(
+  customer: CustomerId,
+  subtotalCents: number,
+  couponCode: string | undefined,
+): Promise<number | undefined> {
+  if (couponCode === undefined) return subtotalCents;
+  const { coupons } = await listMyCoupons(customer);
+  const coupon = coupons.find((candidate) => candidate.code === couponCode && !candidate.redeemed);
+  return coupon === undefined ? undefined : subtotalCents - discountCents(subtotalCents, coupon.percentOff);
 }
