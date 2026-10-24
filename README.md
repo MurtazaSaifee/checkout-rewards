@@ -24,7 +24,7 @@ Known gaps in the current code are listed in `DECISIONS.md` until they are fixed
 
 ## Time spent
 
-About five hours in total, approximately: about 1.5 hours of planning (08:30 to about 10:00 IST), about 2.5 hours of implementation (10:00 to about 12:30 IST, with each branch reviewed before it was merged), and the remainder on a final review and fix pass. Times are local, on 24 October 2026.
+About five hours in total, approximately, and that total includes the final review and fix pass: about 1.5 hours of planning (08:30 to about 10:00 IST), about 2.5 hours of implementation (10:00 to about 12:30 IST, with each branch reviewed by an AI session before it was merged), and the remainder on the final review and fix pass. Times are local, on 24 October 2026.
 
 ## Quick start
 
