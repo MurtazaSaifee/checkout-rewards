@@ -277,3 +277,27 @@ check 200 "Erin adds a notebook set to the third cart" \
   -X PUT "${ERIN[@]}" "${JSON_TYPE[@]}" --data '{"quantity":1}' "$BASE_URL/carts/$ERIN_THIRD/lines/notebook-set"
 check 201 "The same key now places the order for the third cart" \
   -X POST "${ERIN[@]}" -H "$(idem erin-3)" "$BASE_URL/carts/$ERIN_THIRD/checkout"
+
+# Payment. The checkout body names the gateway's answer: tok_ok, the default that
+# the checkouts above used, approves the charge, and tok_decline declines it.
+FRANK=(-H 'X-Customer-Id: example-frank')
+check 201 "Create a cart for frank" -X POST "${FRANK[@]}" "$BASE_URL/carts"
+FRANK_CART="$(printf '%s' "$LAST_BODY" | jq -r '.id')"
+check 200 "Frank sets two enamel bottles" \
+  -X PUT "${FRANK[@]}" "${JSON_TYPE[@]}" --data '{"quantity":2}' "$BASE_URL/carts/$FRANK_CART/lines/enamel-bottle"
+
+# A declined payment is 402 PAYMENT_DECLINED, and nothing is placed: the cart stays open.
+check 402 "Frank's payment is declined" \
+  -X POST "${FRANK[@]}" "${JSON_TYPE[@]}" -H "$(idem frank-1)" --data '{"paymentToken":"tok_decline"}' \
+  "$BASE_URL/carts/$FRANK_CART/checkout"
+check 200 "Frank's cart is still open after the decline" -X GET "${FRANK[@]}" "$BASE_URL/carts/$FRANK_CART"
+
+# A payment token the contract does not list is refused before any business logic runs.
+check 400 "Reject an unknown payment token" \
+  -X POST "${FRANK[@]}" "${JSON_TYPE[@]}" -H "$(idem frank-2)" --data '{"paymentToken":"tok_maybe"}' \
+  "$BASE_URL/carts/$FRANK_CART/checkout"
+
+# A declined attempt stores nothing under its key, so the same key places the order once the payment is approved.
+check 201 "Frank retries with the same key and tok_ok: the order is placed" \
+  -X POST "${FRANK[@]}" "${JSON_TYPE[@]}" -H "$(idem frank-1)" --data '{"paymentToken":"tok_ok"}' \
+  "$BASE_URL/carts/$FRANK_CART/checkout"

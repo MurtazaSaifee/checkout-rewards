@@ -103,4 +103,21 @@ describe('checkout outcome logging', () => {
       logs.entries.filter((entry) => entry.requestId === 'outcome-refused-1' && entry.msg === 'request rejected'),
     ).toEqual([]);
   });
+
+  it('logs a declined payment once, as its outcome, with the PAYMENT_DECLINED code', async () => {
+    const cartId = await createCart(database.app, 'carl');
+    await setLine(database.app, 'carl', cartId, 'ceramic-mug', 1);
+    await request(database.app)
+      .post(`/api/carts/${cartId}/checkout`)
+      .set('X-Customer-Id', 'carl')
+      .set('Idempotency-Key', 'outcome-declined-key')
+      .set('X-Request-Id', 'outcome-declined-1')
+      .send({ paymentToken: 'tok_decline' });
+
+    const forRequest = logs.entries.filter((entry) => entry.requestId === 'outcome-declined-1');
+    expect(forRequest.filter((entry) => entry.msg === 'checkout outcome')).toEqual([
+      expect.objectContaining({ code: 'PAYMENT_DECLINED', status: 402 }),
+    ]);
+    expect(forRequest.filter((entry) => entry.msg === 'request rejected')).toEqual([]);
+  });
 });

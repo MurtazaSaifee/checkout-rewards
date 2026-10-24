@@ -10,8 +10,9 @@ import {
 import { subtotalCents } from '../pricing/pricing.js';
 import { findProduct, takeStock } from '../products/products.repository.js';
 import { type OrderView, loadOrderView } from '../orders/orders.repository.js';
+import { type PaymentGateway } from '../payments/payment-gateway.js';
 import { type CheckoutOptions } from './checkout.options.js';
-import { IdempotencyKeyReusedError } from './checkout.errors.js';
+import { IdempotencyKeyReusedError, PaymentDeclinedError } from './checkout.errors.js';
 import {
   claimIdempotencyKey,
   storeIdempotentResponse,
@@ -41,7 +42,11 @@ const PLACED_STATUS = 201;
  * the order in full or changes nothing. The steps run in this order, and every
  * step that a later change adds goes between the ones around it.
  */
-export async function checkOut(db: Pool, input: CheckoutInput): Promise<CheckoutOutcome> {
+export async function checkOut(
+  db: Pool,
+  payments: PaymentGateway,
+  input: CheckoutInput,
+): Promise<CheckoutOutcome> {
   return withTransaction(db, async (client) => {
     // Step 1: claim the idempotency key before the cart is locked. A retry of a
     // checkout that already placed its order is answered from the stored response
@@ -90,6 +95,19 @@ export async function checkOut(db: Pool, input: CheckoutInput): Promise<Checkout
     }
     if (shortLines.length > 0) {
       throw new InsufficientStockError(shortLines);
+    }
+
+    // Step 6: charge the total through the payment gateway, inside the transaction.
+    // A decline throws, so the stock taken above and the claimed key roll back with
+    // it. Nothing has been placed yet, so a retry with another token starts clean.
+    // This holds only because the gateway is in-process: a real provider's charge
+    // cannot be undone by a rollback.
+    const charge = await payments.charge({
+      amountCents: subtotal,
+      paymentToken: input.options.paymentToken,
+    });
+    if (charge === 'declined') {
+      throw new PaymentDeclinedError();
     }
 
     // Step 7: take the order number. This is the last write before the order

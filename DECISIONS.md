@@ -205,6 +205,22 @@ The header is claimed, not verified: any caller can send any identifier. The rul
 
 **Consequences:** A refused checkout reads the available quantity for each short line, which is cheap at this scale. The rule is only as strong as the statement that carries it, so the `WHERE stock >= $2` clause is where a reviewer must look. The `CHECK (stock >= 0)` constraint on the column is the backstop: if that clause were ever lost, the update would fail instead of overselling.
 
+## Decision: Payment is charged inside the checkout transaction, through a fake gateway
+
+**Context:** A checkout takes stock and an order number, and the customer must never be charged for an order that is not placed, nor leave stock taken for an order that was declined. The store has no real payment provider, but the tester needs to see a declined payment, and the design has to say what a real provider would require.
+
+**Options considered:**
+
+1. Treat every successful checkout as paid, with no payment step. Declines cannot be exercised, and the design has no place for a real charge.
+2. Charge outside the database transaction, in two phases: reserve the stock and a pending order, charge, then confirm the order or release the reservation. A slow provider call holds no row locks, but this needs pending order states, compensation when a charge fails, and recovery for a crash between the charge and the confirmation.
+3. Charge inside the checkout transaction, after the stock is taken and before the order number is taken, through an in-process gateway. A decline fails the transaction, and the rollback undoes the stock and the claimed key together.
+
+**Choice:** Option 3. The gateway is an interface with one charge operation, and its only implementation is an in-process fake. The fake approves the payment token `tok_ok` and declines `tok_decline`. The token is a checkout option that defaults to `tok_ok`, so it is part of the request fingerprint. A decline is a typed domain error, answered `402 PAYMENT_DECLINED`, and its outcome is logged with that code.
+
+**Why:** The fake moves no money, so a rollback leaves nothing outside the database to undo. One transaction then covers stock, the claimed key, the order number and the order, and no compensation logic is needed. Charging after the stock is taken means a line that is short never reaches the gateway. Charging before the order number is taken means a decline never consumes a number, so the numbers stay gapless with no clean-up. The counter row is locked only after the charge, so it is never held during the charge.
+
+**Consequences:** The transaction holds its row locks for the duration of the charge. That is harmless with the fake and wrong with a real provider: a slow call would hold the stock rows and the cart lock, and a charge that succeeds before a database failure would be lost while the money has moved. Adopting a real provider means moving to the two-phase design of option 2: reserve the stock and create a pending order in one transaction, charge outside any transaction with an idempotency key the provider honours, then confirm the order or release the reservation. Orders left pending after a crash then need a reconciliation job, which is not built here. Because the token is part of the fingerprint, a retry under the same key with another token is refused as a reused key once an order exists. A declined attempt stores nothing, so its key works again with an approving token.
+
 ## Decision: Order numbers come from a counter row taken last
 
 **Context:** Customers and staff refer to orders by number, so the numbers should run 1, 2, 3 with no gaps. A checkout that fails must not consume a number. The number must be assigned inside the checkout transaction, so it always belongs to the order that is actually stored.

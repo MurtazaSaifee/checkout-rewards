@@ -43,7 +43,7 @@ export function RetryRace({ customer, onFinished }: { customer: CustomerId; onFi
 
       const key = newIdempotencyKey();
       const settled = await Promise.allSettled(
-        Array.from({ length: RETRIES }, () => checkOutCart(customer, cart.id, key)),
+        Array.from({ length: RETRIES }, () => checkOutCart(customer, cart.id, key, 'tok_ok')),
       );
       const stockAfter = await stockOf();
 

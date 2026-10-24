@@ -39,7 +39,7 @@ export function RaceTool({ customer, onFinished }: { customer: CustomerId; onFin
     // Every checkout is started in the same moment, so the server receives them together.
     // Each is a separate attempt, so each has its own key.
     const settled = await Promise.allSettled(
-      cartIds.map((cartId) => checkOutCart(customer, cartId, newIdempotencyKey())),
+      cartIds.map((cartId) => checkOutCart(customer, cartId, newIdempotencyKey(), 'tok_ok')),
     );
     const outcomes = settled.map((result) =>
       result.status === 'fulfilled' ? placed(result.value) : refusal(result.reason),

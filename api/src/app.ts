@@ -13,11 +13,13 @@ import { cartsRouter } from './modules/carts/carts.routes.js';
 import { checkoutRouter } from './modules/checkout/checkout.routes.js';
 import { couponsRouter } from './modules/coupons/coupons.routes.js';
 import { ordersRouter } from './modules/orders/orders.routes.js';
+import { type PaymentGateway } from './modules/payments/payment-gateway.js';
 import { productsRouter } from './modules/products/products.routes.js';
 
 export interface AppDependencies {
   db: Pool;
   logger: Logger;
+  payments: PaymentGateway;
   /** The key every admin operation requires in the admin key header. */
   adminKey: string;
   /** Milestone frequency and percentage, fixed for the life of the process. */
@@ -43,7 +45,7 @@ export function createApp(deps: AppDependencies): Express {
 
   app.use('/api', productsRouter(deps.db));
   app.use('/api', cartsRouter(deps.db));
-  app.use('/api', checkoutRouter(deps.db));
+  app.use('/api', checkoutRouter(deps.db, deps.payments));
   app.use('/api', ordersRouter(deps.db));
   app.use('/api', couponsRouter(deps.db, deps.coupons));
 

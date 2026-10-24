@@ -20,7 +20,8 @@ export type DomainErrorCode =
   | 'ADMIN_KEY_INVALID'
   | 'NO_ELIGIBLE_MILESTONE'
   | 'IDEMPOTENCY_KEY_REQUIRED'
-  | 'IDEMPOTENCY_KEY_REUSED';
+  | 'IDEMPOTENCY_KEY_REUSED'
+  | 'PAYMENT_DECLINED';
 
 /**
  * Every stable error code a client can receive. The ErrorCode enum in

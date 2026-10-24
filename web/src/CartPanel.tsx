@@ -1,11 +1,13 @@
 import { useState } from 'react';
-import type { CartLine } from './api/client';
+import type { CartLine, PaymentToken } from './api/client';
 import { ErrorDetails } from './ErrorDetails';
 import { formatCents } from './money';
 import type { CartController } from './useCart';
 
 export function CartPanel({ cart }: { cart: CartController }) {
   const { state, editError, checkoutError } = cart;
+  // The tester's choice of gateway answer for the next checkout. Approval is the default.
+  const [paymentToken, setPaymentToken] = useState<PaymentToken>('tok_ok');
 
   return (
     <section aria-labelledby="cart-heading">
@@ -17,10 +19,24 @@ export function CartPanel({ cart }: { cart: CartController }) {
               <button type="button" onClick={cart.refresh}>
                 Refresh cart
               </button>{' '}
+              <label>
+                Payment outcome{' '}
+                <select
+                  value={paymentToken}
+                  onChange={(event) => {
+                    setPaymentToken(event.target.value === 'tok_decline' ? 'tok_decline' : 'tok_ok');
+                  }}
+                >
+                  <option value="tok_ok">Approve (tok_ok)</option>
+                  <option value="tok_decline">Decline (tok_decline)</option>
+                </select>
+              </label>{' '}
               <button
                 type="button"
                 disabled={state.cart.status !== 'open' || state.cart.lines.length === 0}
-                onClick={cart.checkOut}
+                onClick={() => {
+                  cart.checkOut(paymentToken);
+                }}
               >
                 Check out
               </button>

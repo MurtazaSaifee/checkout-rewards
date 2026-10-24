@@ -3,6 +3,7 @@ import type { Pool } from 'pg';
 import { DomainError } from '../../errors.js';
 import { customerIdOf } from '../../http/customer-identity.js';
 import { idempotencyKeyOf } from '../../http/idempotency-key.js';
+import { type PaymentGateway } from '../payments/payment-gateway.js';
 import { checkoutOptionsOf } from './checkout.options.js';
 import { type CheckoutOutcome, checkOut } from './checkout.service.js';
 
@@ -14,7 +15,7 @@ const OUTCOME_MESSAGE = 'checkout outcome';
  * IDEMPOTENT_REPLAY for a retry answered from the stored response, or the error code
  * for a refusal. The error handler then leaves that refusal unlogged.
  */
-export function checkoutRouter(db: Pool): Router {
+export function checkoutRouter(db: Pool, payments: PaymentGateway): Router {
   const router = Router();
 
   router.post('/carts/:cartId/checkout', async (req, res) => {
@@ -23,7 +24,7 @@ export function checkoutRouter(db: Pool): Router {
 
     let outcome: CheckoutOutcome;
     try {
-      outcome = await checkOut(db, {
+      outcome = await checkOut(db, payments, {
         cartId,
         customerId: customerIdOf(req),
         idempotencyKey,

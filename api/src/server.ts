@@ -3,6 +3,7 @@ import { createApp } from './app.js';
 import { loadConfig } from './config.js';
 import { bootstrapDatabase } from './db/bootstrap.js';
 import { createLogger } from './logging.js';
+import { FakePaymentGateway } from './modules/payments/fake-payment-gateway.js';
 
 /**
  * Process entry point. Validates configuration, brings the database to the
@@ -20,6 +21,7 @@ async function main(): Promise<void> {
   const app = createApp({
     db,
     logger,
+    payments: new FakePaymentGateway(),
     adminKey: config.adminKey,
     coupons: config.coupons,
   });

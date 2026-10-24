@@ -233,6 +233,8 @@ paths:
                 $ref: '#/components/schemas/Order'
         '400':
           $ref: '#/components/responses/BadRequest'
+        '402':
+          $ref: '#/components/responses/PaymentDeclined'
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
@@ -626,10 +628,21 @@ components:
     CheckoutRequest:
       type: object
       description: >-
-        Options for a checkout. The body is optional. No options are defined
-        yet, so the only body accepted is an empty object.
+        Options for a checkout. The body is optional, and an empty object
+        means the defaults.
       additionalProperties: false
-      properties: {}
+      properties:
+        paymentToken:
+          type: string
+          enum:
+            - tok_ok
+            - tok_decline
+          default: tok_ok
+          description: >-
+            The payment gateway's answer for this checkout. tok_ok approves the
+            charge; tok_decline declines it, and the checkout is answered 402
+            PAYMENT_DECLINED.
+          example: tok_ok
     OrderList:
       type: object
       required:
@@ -768,6 +781,7 @@ components:
         - NO_ELIGIBLE_MILESTONE
         - IDEMPOTENCY_KEY_REQUIRED
         - IDEMPOTENCY_KEY_REUSED
+        - PAYMENT_DECLINED
     Problem:
       type: object
       description: RFC 9457 Problem Details, extended with `code` and `requestId`.
@@ -853,6 +867,19 @@ components:
         means the cart has no lines, so there is nothing to order.
         IDEMPOTENCY_KEY_REUSED means the key was already used for a different
         request.
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/RequestId'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    PaymentDeclined:
+      description: >-
+        The payment gateway declined the charge. PAYMENT_DECLINED means nothing
+        was placed: stock, the cart and the order numbering are unchanged, the
+        cart is still open, and the same cart can be checked out again with
+        another payment token.
       headers:
         X-Request-Id:
           $ref: '#/components/headers/RequestId'
