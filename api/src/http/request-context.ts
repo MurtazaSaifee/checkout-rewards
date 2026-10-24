@@ -41,12 +41,15 @@ export function requestContext(logger: Logger): RequestHandler {
     req.log = logger.child({ requestId: req.id });
     res.setHeader(REQUEST_ID_HEADER, req.id);
 
+    // Captured now: once a router has claimed the request, Express rewrites
+    // req.url to be relative to the mount point, and it would log the wrong path.
+    const { method, path } = req;
     const startedAt = performance.now();
     res.once('finish', () => {
       req.log.info(
         {
-          method: req.method,
-          path: req.path,
+          method,
+          path,
           status: res.statusCode,
           durationMs: Math.round(performance.now() - startedAt),
         },

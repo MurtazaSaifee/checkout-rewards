@@ -35,7 +35,25 @@ describe('structured request logging', () => {
       expect.objectContaining({ msg: 'request rejected', code: 'VALIDATION_FAILED' }),
     );
     expect(forRequest).toContainEqual(
-      expect.objectContaining({ msg: 'request completed', method: 'GET', status: 400 }),
+      expect.objectContaining({
+        msg: 'request completed',
+        method: 'GET',
+        path: '/api/products',
+        status: 400,
+      }),
+    );
+  });
+
+  it('records the full path of a request that a router handles', async () => {
+    await request(database.app).get('/api/products').set('X-Request-Id', 'log-check-2');
+
+    expect(logs.entries).toContainEqual(
+      expect.objectContaining({
+        msg: 'request completed',
+        requestId: 'log-check-2',
+        path: '/api/products',
+        status: 200,
+      }),
     );
   });
 });
