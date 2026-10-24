@@ -301,3 +301,27 @@ check 400 "Reject an unknown payment token" \
 check 201 "Frank retries with the same key and tok_ok: the order is placed" \
   -X POST "${FRANK[@]}" "${JSON_TYPE[@]}" -H "$(idem frank-1)" --data '{"paymentToken":"tok_ok"}' \
   "$BASE_URL/carts/$FRANK_CART/checkout"
+
+# Price changes. A checkout may send the total the customer saw. Hana reads her cart, then checks out
+# with a total one cent below it: the checkout is refused and names the current total, and nothing is
+# placed. Her retry with the same key and the total she saw places the order, because a refusal stores
+# nothing under its key. The totals are read from the cart, so the section works whatever the prices are.
+HANA=(-H 'X-Customer-Id: example-hana')
+check 201 "Create a cart for hana" -X POST "${HANA[@]}" "$BASE_URL/carts"
+HANA_CART="$(printf '%s' "$LAST_BODY" | jq -r '.id')"
+check 200 "Hana sets two canvas totes" \
+  -X PUT "${HANA[@]}" "${JSON_TYPE[@]}" --data '{"quantity":2}' "$BASE_URL/carts/$HANA_CART/lines/canvas-tote"
+check 200 "Hana views her cart: its subtotal is the total she sees" -X GET "${HANA[@]}" "$BASE_URL/carts/$HANA_CART"
+HANA_TOTAL="$(printf '%s' "$LAST_BODY" | jq -r '.subtotalCents')"
+
+check 409 "A checkout at a total one cent below the current one is refused with PRICE_CHANGED" \
+  -X POST "${HANA[@]}" "${JSON_TYPE[@]}" -H "$(idem hana-1)" --data "{\"expectedTotalCents\":$((HANA_TOTAL - 1))}" \
+  "$BASE_URL/carts/$HANA_CART/checkout"
+assert_body --argjson total "$HANA_TOTAL" '.code == "PRICE_CHANGED" and .currentTotalCents == $total'
+check 200 "Hana's cart is still open after the refused price change" -X GET "${HANA[@]}" "$BASE_URL/carts/$HANA_CART"
+assert_body '.status == "open"'
+
+check 201 "Hana checks out at the total she saw, with the same key" \
+  -X POST "${HANA[@]}" "${JSON_TYPE[@]}" -H "$(idem hana-1)" --data "{\"expectedTotalCents\":$HANA_TOTAL}" \
+  "$BASE_URL/carts/$HANA_CART/checkout"
+assert_body --argjson total "$HANA_TOTAL" '.totalCents == $total'

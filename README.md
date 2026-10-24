@@ -33,6 +33,20 @@ docker compose exec db psql -U postgres -d checkout_rewards \
 
 Prices are integer cents. Stock cannot go below zero: the database rejects such a change.
 
+Two checkout refusals can be triggered this way, and each refusal changes nothing:
+
+- `PRICE_CHANGED`: read a cart's subtotal, change a price in the database, then check the cart out with that subtotal as the expected total. The checkout is refused and names the new total.
+- `INSUFFICIENT_STOCK`: set a cart line, then lower the stock of that product below the quantity in the cart. The checkout is refused and lists the short line.
+
+For example, if alice's cart holds two `canvas-tote` at 1800 cents, its subtotal is 3600. After this change, checking out with `{"expectedTotalCents": 3600}` is answered `409 PRICE_CHANGED` with `currentTotalCents` 4000:
+
+```sh
+docker compose exec db psql -U postgres -d checkout_rewards \
+  -c "UPDATE products SET unit_price_cents = 2000 WHERE id = 'canvas-tote';"
+```
+
+In the web app, add products to a cart, change the price the same way, and press Check out: the panel shows the new total.
+
 ## Running the tests
 
 You need Node.js 22.12 or later (CI uses 24) and a Postgres server that the tests can create databases on. Each integration test file creates its own uniquely named database, applies the migrations and seed data, and drops the database afterwards, so the files run in parallel against one server.
@@ -104,7 +118,9 @@ A cart line is set to a quantity, not added to. `PUT /api/carts/{cartId}/lines/{
 
 Every checkout request must send an `Idempotency-Key` header, 1 to 128 letters, digits, `.`, `_`, `:` or `-`, that names one attempt. A retry with the same key and the same request returns the first attempt's response, byte for byte, and places no second order. Reusing the key for a different cart is refused with `IDEMPOTENCY_KEY_REUSED`. A request without the header is refused with `IDEMPOTENCY_KEY_REQUIRED`. Only a successful checkout is remembered: a checkout that fails, for example with `INSUFFICIENT_STOCK` or `CART_EMPTY`, stores nothing, so the same key works again once the cart is fixed.
 
-If any line is short, the response is `409 INSUFFICIENT_STOCK`, and its `shortLines` list every short line with the quantity requested and the quantity available. A failed checkout takes no order number, so numbers run 1, 2, 3 with no gaps. A cart is checked out once: a second attempt, or a change to the cart afterwards, is refused with `CART_ALREADY_CHECKED_OUT`.
+If any line is short, the response is `409 INSUFFICIENT_STOCK`, and its `shortLines` list every short line with the quantity requested and the quantity available. A failed checkout takes no order number, so numbers run 1, 2, 3 with no gaps.
+
+The checkout body may also carry `expectedTotalCents`, the total the customer saw. When the total at current prices differs from it, the checkout is refused with `409 PRICE_CHANGED`, and `currentTotalCents` gives the total now. Nothing is placed, and the cart stays open, so the same cart can be checked out again at the new total. Leave the field out to check out at current prices. The web app sends the subtotal its cart view shows. A cart is checked out once: a second attempt, or a change to the cart afterwards, is refused with `CART_ALREADY_CHECKED_OUT`.
 
 The checkout body may name a `paymentToken`. `tok_ok`, the default, approves the charge, and `tok_decline` declines it, which is answered `402 PAYMENT_DECLINED`. The payment gateway is an in-process fake that moves no money, so the token alone decides the outcome. A declined checkout changes nothing, like any refused checkout: stock, the cart and the order numbers are as they were, and the same cart can be checked out again.
 

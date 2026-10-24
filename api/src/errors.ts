@@ -21,7 +21,8 @@ export type DomainErrorCode =
   | 'NO_ELIGIBLE_MILESTONE'
   | 'IDEMPOTENCY_KEY_REQUIRED'
   | 'IDEMPOTENCY_KEY_REUSED'
-  | 'PAYMENT_DECLINED';
+  | 'PAYMENT_DECLINED'
+  | 'PRICE_CHANGED';
 
 /**
  * Every stable error code a client can receive. The ErrorCode enum in
