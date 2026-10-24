@@ -12,12 +12,14 @@ import {
  */
 export interface CheckoutOptions {
   paymentToken: PaymentToken;
+  /** The coupon the customer redeems with this checkout. Absent when none is given. */
+  couponCode?: string;
 }
 
 /**
  * Reads the checkout options from the request body. A missing body and an empty
- * object both mean the defaults. The contract has already rejected any other
- * payment token, so the check here is a backstop, not the validation.
+ * object both mean the defaults, and an omitted coupon code means no coupon. The
+ * contract has already rejected anything else, so the checks here are backstops.
  */
 export function checkoutOptionsOf(body: unknown): CheckoutOptions {
   if (body === undefined) {
@@ -26,8 +28,24 @@ export function checkoutOptionsOf(body: unknown): CheckoutOptions {
   if (typeof body !== 'object' || body === null) {
     throw new TypeError('checkout body must be an object');
   }
-  const { paymentToken = DEFAULT_PAYMENT_TOKEN } = body as { paymentToken?: unknown };
-  return { paymentToken: paymentTokenOf(paymentToken) };
+  const { paymentToken = DEFAULT_PAYMENT_TOKEN, couponCode } = body as {
+    paymentToken?: unknown;
+    couponCode?: unknown;
+  };
+  return {
+    paymentToken: paymentTokenOf(paymentToken),
+    couponCode: couponCodeOf(couponCode),
+  };
+}
+
+function couponCodeOf(value: unknown): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new TypeError('coupon code must be a non-empty string');
+  }
+  return value;
 }
 
 function paymentTokenOf(value: unknown): PaymentToken {

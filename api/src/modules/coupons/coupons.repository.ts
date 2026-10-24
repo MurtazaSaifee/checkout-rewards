@@ -73,6 +73,37 @@ export async function insertCoupon(client: PoolClient, coupon: NewCoupon): Promi
   );
 }
 
+/** A coupon as checkout reads it while holding its row lock. */
+export interface LockedCouponRow {
+  code: string;
+  customerId: string;
+  percentOff: number;
+  redeemedByOrderId: string | null;
+}
+
+/**
+ * Locks the coupon's row until the caller's transaction ends, and returns it, or
+ * undefined when no coupon has the code. A second checkout that names the same
+ * coupon waits here, then reads the row after the first one commits, so it sees
+ * the redemption rather than an outdated, unredeemed row.
+ */
+export async function lockCouponByCode(client: PoolClient, code: string): Promise<LockedCouponRow | undefined> {
+  const { rows } = await client.query<LockedCouponRow>(
+    `SELECT code, customer_id AS "customerId", percent_off AS "percentOff",
+            redeemed_by_order_id AS "redeemedByOrderId"
+       FROM coupons
+      WHERE code = $1
+        FOR UPDATE`,
+    [code],
+  );
+  return rows[0];
+}
+
+/** Marks the coupon redeemed by the order. Runs only in the checkout transaction that holds the coupon's lock. */
+export async function markCouponRedeemed(client: PoolClient, code: string, orderId: string): Promise<void> {
+  await client.query('UPDATE coupons SET redeemed_by_order_id = $2 WHERE code = $1', [code, orderId]);
+}
+
 /** The coupons issued to one customer, in milestone order. */
 export async function listCouponsOfCustomer(runner: SqlRunner, customerId: string): Promise<CustomerCouponView[]> {
   const { rows } = await runner.query<CustomerCouponView>(

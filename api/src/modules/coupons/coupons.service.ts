@@ -1,9 +1,14 @@
-import type { Pool } from 'pg';
+import type { Pool, PoolClient } from 'pg';
 import type { CouponRules } from '../../config.js';
 import { withTransaction } from '../../db/transaction.js';
 import { milestonesReached } from '../pricing/pricing.js';
 import { newCouponCode } from './coupon.codes.js';
-import { NoEligibleMilestoneError } from './coupon.errors.js';
+import {
+  CouponAlreadyRedeemedError,
+  CouponNotFoundError,
+  CouponNotOwnedError,
+  NoEligibleMilestoneError,
+} from './coupon.errors.js';
 import {
   type AdminCouponView,
   type CustomerCouponView,
@@ -12,6 +17,7 @@ import {
   insertCoupon,
   listAllCoupons as selectAllCoupons,
   listCouponsOfCustomer,
+  lockCouponByCode,
   lockOrderCount,
 } from './coupons.repository.js';
 
@@ -80,6 +86,36 @@ export async function generateCoupon(db: Pool, rules: CouponRules): Promise<Gene
       unrewardedMilestonesRemaining: reached - milestone,
     };
   });
+}
+
+/** A coupon that a checkout has locked and found redeemable by the customer. */
+export interface RedeemableCoupon {
+  code: string;
+  percentOff: number;
+}
+
+/**
+ * Locks the coupon a checkout names, and checks that the customer may redeem it: it
+ * exists, it was issued to this customer, and no order has redeemed it yet. The
+ * lock is held until the checkout's transaction ends, so the redemption is decided
+ * against the committed state, and a concurrent checkout with the same coupon waits.
+ */
+export async function lockRedeemableCoupon(
+  client: PoolClient,
+  code: string,
+  customerId: string,
+): Promise<RedeemableCoupon> {
+  const coupon = await lockCouponByCode(client, code);
+  if (coupon === undefined) {
+    throw new CouponNotFoundError();
+  }
+  if (coupon.customerId !== customerId) {
+    throw new CouponNotOwnedError();
+  }
+  if (coupon.redeemedByOrderId !== null) {
+    throw new CouponAlreadyRedeemedError();
+  }
+  return { code: coupon.code, percentOff: coupon.percentOff };
 }
 
 /** The calling customer's coupons, in milestone order. */
