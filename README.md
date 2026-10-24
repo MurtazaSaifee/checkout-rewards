@@ -197,7 +197,7 @@ The web app has a coupon field at checkout, and shows the coupon and discount on
 curl -H 'X-Admin-Key: local-admin-key' http://localhost:3000/api/admin/report
 ```
 
-The report is calculated from the orders and coupons each time it is requested. Nothing is stored, so it reflects the store at the moment it is read, and it agrees with the lists read at that moment. Money is whole cents, and net revenue is gross revenue less discounts. `DECISIONS.md` explains why the report is calculated this way.
+The report is calculated from the orders and coupons each time it is requested. Nothing is stored, so it reflects the store at the moment it is read, and it agrees with the lists read at that moment. Money is whole cents, and net revenue is gross revenue less discounts. Units sold are grouped by product identifier and named from the current catalogue, while each order keeps the names it was placed with, so reconciliation matches products by identifier. `DECISIONS.md` explains why the report is calculated this way.
 
 ## Errors and request identifiers
 
