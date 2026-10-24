@@ -6,6 +6,7 @@ import {
   getCart,
   newIdempotencyKey,
   type Order,
+  type PaymentToken,
   removeCartLine,
   setCartLineQuantity,
 } from './api/client';
@@ -28,7 +29,7 @@ export interface CartController {
   refresh: () => void;
   setQuantity: (productId: string, quantity: number) => void;
   removeLine: (productId: string) => void;
-  checkOut: () => void;
+  checkOut: (paymentToken: PaymentToken) => void;
 }
 
 export interface CartOptions {
@@ -124,13 +125,13 @@ export function useCart(customer: CustomerId, options: CartOptions): CartControl
     [customer, edit],
   );
 
-  const checkOut = useCallback(() => {
+  const checkOut = useCallback((paymentToken: PaymentToken) => {
     if (state.kind !== 'ready') return;
     const cartId = state.cart.id;
     setEditError(undefined);
     setCheckoutError(undefined);
     // Each click is a new attempt, so it gets a new key.
-    checkOutCart(customer, cartId, newIdempotencyKey()).then(
+    checkOutCart(customer, cartId, newIdempotencyKey(), paymentToken).then(
       (order) => {
         onOrderPlaced(order);
         // The cart is checked out now. Read it back, so the panel shows the server's state.

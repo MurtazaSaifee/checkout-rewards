@@ -9,6 +9,8 @@ export type CartLine = components['schemas']['CartLine'];
 export type Order = components['schemas']['Order'];
 export type OrderLine = components['schemas']['OrderLine'];
 export type OrderList = components['schemas']['OrderList'];
+/** The payment gateway's answer for one checkout: tok_ok approves, tok_decline declines. */
+export type PaymentToken = NonNullable<components['schemas']['CheckoutRequest']['paymentToken']>;
 
 /** Thrown for any non-2xx answer. Keeps the full body so the UI can show it raw. */
 export class ApiError extends Error {
@@ -87,17 +89,24 @@ export async function removeCartLine(
 
 /**
  * Places the order for the cart in full, or changes nothing. The key names this attempt:
- * a retry with the same key gets the same answer back. A refusal comes back as an ApiError.
+ * a retry with the same key gets the same answer back. The payment token is the gateway's
+ * answer for this attempt. A refusal, including a declined payment, comes back as an ApiError.
  */
 export async function checkOutCart(
   customerId: string,
   cartId: string,
   idempotencyKey: string,
+  paymentToken: PaymentToken,
   signal?: AbortSignal,
 ): Promise<Order> {
   const response = await fetch(`${API_BASE}/carts/${cartId}/checkout`, {
     method: 'POST',
-    headers: { ...customerHeaders(customerId), 'Idempotency-Key': idempotencyKey },
+    headers: {
+      ...customerHeaders(customerId),
+      'Content-Type': 'application/json',
+      'Idempotency-Key': idempotencyKey,
+    },
+    body: JSON.stringify({ paymentToken }),
     signal,
   });
   return readJson<Order>(response);
