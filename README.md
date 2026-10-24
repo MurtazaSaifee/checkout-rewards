@@ -1,8 +1,30 @@
 # Checkout and Rewards
 
+[![CI](https://github.com/MurtazaSaifee/checkout-rewards/actions/workflows/ci.yml/badge.svg)](https://github.com/MurtazaSaifee/checkout-rewards/actions/workflows/ci.yml)
+
 A backend for an ecommerce store where customers keep carts and check out, and every nth placed order earns the customer who placed it a single-use discount coupon. The service is a TypeScript API on Postgres, with a small React app for trying it by hand.
 
 The API serves the product listing, customers' carts, checkout with order viewing, and coupons. `api/openapi.yaml` is the authoritative description of every endpoint, status code and error code.
+
+## Scope and limits
+
+The service covers the product listing, carts, checkout, orders, coupons, and the administrator's report. The rules that overlapping requests could break are enforced in the database, and `DECISIONS.md` explains the design.
+
+These are not built:
+
+- Authentication. Customers are identified by a header they send, and the admin key is a shared placeholder.
+- A real payment provider. The gateway is an in-process fake, and checkout does not use two-phase payment.
+- Endpoints for editing products. Prices and stock change in the database, as shown below.
+- Coupon expiry, stacking several coupons on one order, and changing the milestone interval or the coupon percentage while the service runs.
+- Stock holds for carts, cleanup of abandoned carts, expiry of idempotency keys, and cancellation or refunds.
+- Metrics, tracing, dashboards and a production deployment. Compose runs the stack locally.
+- Frontend tests and visual polish, multiple currencies, and taxes.
+
+Known gaps in the current code are listed in `DECISIONS.md` until they are fixed.
+
+## Time spent
+
+About five hours in total, approximately: about 1.5 hours of planning (08:30 to about 10:00 IST), about 2.5 hours of implementation (10:00 to about 12:30 IST, with each branch reviewed before it was merged), and the remainder on a final review and fix pass. Times are local, on 24 October 2026.
 
 ## Quick start
 
@@ -106,6 +128,14 @@ The defaults are public development values. Compose sets its own `DATABASE_URL` 
 
   Set `BASE_URL` to target another stack (default `http://localhost:8080/api`). The checkout and coupon sections take stock and place orders, and the coupon section assumes the default `COUPON_EVERY_N_ORDERS` of 5. Run the script once against a freshly started stack with default settings, and set `ADMIN_KEY` if that stack uses another admin key.
 
+## Who may call what
+
+Most operations act for one customer, who is named in the `X-Customer-Id` header. These are creating and reading carts, setting and removing cart lines, checkout, the customer's orders (`GET /api/orders` and `GET /api/orders/{orderId}`), and the customer's coupons (`GET /api/coupons`).
+
+Four operations are administrative and take the `X-Admin-Key` header instead: `GET` and `POST /api/admin/coupons`, `GET /api/admin/orders` and `GET /api/admin/report`. A missing or wrong key is refused with `401 ADMIN_KEY_INVALID`.
+
+`GET /api/products` is public and needs neither header. Both headers are placeholders for real authentication; see [Scope and limits](#scope-and-limits).
+
 ## Carts and customer identity
 
 Cart operations name the customer in the `X-Customer-Id` header, a value of 1 to 128 letters, digits, `.`, `_`, `:` or `-`. A request without the header, or with a blank one, is refused with `CUSTOMER_ID_REQUIRED`. The identifier is claimed, not verified: any caller can send any identifier. It keeps one customer's carts out of another's view in normal use, and it is not a security control.
@@ -116,11 +146,11 @@ A cart line is set to a quantity, not added to. `PUT /api/carts/{cartId}/lines/{
 
 `POST /api/carts/{cartId}/checkout` places the cart's order and returns it with status 201. Checkout runs in one database transaction that either places the whole order or changes nothing: it locks the cart, prices the lines at current prices, takes stock with one conditional update per line, takes the next order number, and records the order and its lines.
 
-Every checkout request must send an `Idempotency-Key` header, 1 to 128 letters, digits, `.`, `_`, `:` or `-`, that names one attempt. A retry with the same key and the same request returns the first attempt's response, byte for byte, and places no second order. Reusing the key for a different cart is refused with `IDEMPOTENCY_KEY_REUSED`. A request without the header is refused with `IDEMPOTENCY_KEY_REQUIRED`. Only a successful checkout is remembered: a checkout that fails, for example with `INSUFFICIENT_STOCK` or `CART_EMPTY`, stores nothing, so the same key works again once the cart is fixed.
+Every checkout request must send an `Idempotency-Key` header, 1 to 128 letters, digits, `.`, `_`, `:` or `-`, that names one attempt. A retry with the same key and the same request returns the first attempt's response, byte for byte, and places no second order. Reusing the key for a different request, such as another cart or other checkout options, is refused with `IDEMPOTENCY_KEY_REUSED`. A request without the header is refused with `IDEMPOTENCY_KEY_REQUIRED`. Only a successful checkout is remembered: a checkout that fails, for example with `INSUFFICIENT_STOCK` or `CART_EMPTY`, stores nothing, so the same key works again once the cart is fixed.
 
 If any line is short, the response is `409 INSUFFICIENT_STOCK`, and its `shortLines` list every short line with the quantity requested and the quantity available. A failed checkout takes no order number, so numbers run 1, 2, 3 with no gaps.
 
-The checkout body may also carry `expectedTotalCents`, the total the customer saw. When the total at current prices differs from it, the checkout is refused with `409 PRICE_CHANGED`, and `currentTotalCents` gives the total now. Nothing is placed, and the cart stays open, so the same cart can be checked out again at the new total. Leave the field out to check out at current prices. The web app sends the total its cart view shows, less the discount when a coupon is named. A cart is checked out once: a second attempt, or a change to the cart afterwards, is refused with `CART_ALREADY_CHECKED_OUT`.
+The checkout body may also carry `expectedTotalCents`, the total the customer saw. When the total at current prices differs from it, the checkout is refused with `409 PRICE_CHANGED`, and `currentTotalCents` gives the total now. Nothing is placed, and the cart stays open, so the same cart can be checked out again at the new total. Leave the field out to check out at current prices. The web app sends the subtotal when no coupon is named, and the discounted total when the named coupon is one it lists as unredeemed. A cart is checked out once: a second attempt, or a change to the cart afterwards, is refused with `CART_ALREADY_CHECKED_OUT`.
 
 The checkout body may name a `paymentToken`. `tok_ok`, the default, approves the charge, and `tok_decline` declines it, which is answered `402 PAYMENT_DECLINED`. The payment gateway is an in-process fake that moves no money, so the token alone decides the outcome. A declined checkout changes nothing, like any refused checkout: stock, the cart and the order numbers are as they were, and the same cart can be checked out again.
 
@@ -157,7 +187,7 @@ A coupon that is not the customer's is refused. `COUPON_NOT_FOUND` means no coup
 
 A coupon is redeemed only by a placed order. A checkout that fails for any reason, including a declined payment, leaves the coupon unredeemed. When two checkouts name the same coupon at the same moment, one places its order and the other is refused with `COUPON_ALREADY_REDEEMED`, and its cart stays open.
 
-The web app has a coupon field at checkout, and shows the coupon and discount on the order. Its race tool redeems one of the customer's coupons from several carts at once and summarises the outcomes.
+The web app has a coupon field at checkout, and shows the coupon and discount on the order. Its coupon race tool redeems one of the customer's coupons from several carts at once and summarises the outcomes.
 
 ## Admin report and orders
 
@@ -182,5 +212,5 @@ Logs are one JSON object per line. Every line written for a request carries that
 - `api/` is the Express 5 service. `src/` holds the application factory, the HTTP layer (request context, contract validation, Problem Details mapping), feature modules and the database code. `migrations/` holds plain SQL files. `test/` holds the unit and integration tests. `openapi.yaml` is the contract and `examples.sh` the executable examples.
 - `web/` is the React and Vite app, with `nginx.conf` for the Compose image.
 - `docker-compose.yml` runs the whole stack.
-- `.github/workflows/ci.yml` runs type checks, lint and both test projects against a Postgres 18 service on every push.
+- `.github/workflows/ci.yml` runs type checks, lint and both test projects against a Postgres 18 service on every push and pull request.
 - `DECISIONS.md` records the material design decisions, the options considered and their trade-offs.
