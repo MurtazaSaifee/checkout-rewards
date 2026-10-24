@@ -174,6 +174,65 @@ check 409 "Dan's checkout is refused, and every short line is listed" \
   -X POST "${DAN[@]}" -H "$(idem hoodie-dan)" "$BASE_URL/carts/$HOODIE_DAN/checkout"
 check 200 "Dan's cart is still open after the refusal" -X GET "${DAN[@]}" "$BASE_URL/carts/$HOODIE_DAN"
 
+# Coupons. Every fifth order reaches a milestone (COUPON_EVERY_N_ORDERS, default 5), and an
+# administrator generates the coupon for it. The section assumes the default of five and a freshly
+# started stack: the orders placed above are numbers 1 and 2, and the orders below are 3 to 5.
+#
+# The admin key is a placeholder that keeps admin operations out of ordinary use. It is not
+# security: anyone who knows it can issue coupons. ADMIN_KEY sets it; the default matches the README.
+ADMIN=(-H "X-Admin-Key: ${ADMIN_KEY:-local-admin-key}")
+GRACE=(-H 'X-Customer-Id: example-grace')
+
+# assert_body FILTER...: fails the script unless the last response body satisfies the jq filter.
+assert_body() {
+  if ! printf '%s' "$LAST_BODY" | jq -e "$@" >/dev/null; then
+    printf 'The response does not match %s\n' "$*" >&2
+    exit 1
+  fi
+}
+
+# place_order CUSTOMER_ID: a cart with one notebook set, checked out. Each call places one order.
+place_order() {
+  local customer="$1" cart
+  check 201 "$customer creates a cart" -X POST -H "X-Customer-Id: $customer" "$BASE_URL/carts"
+  cart="$(printf '%s' "$LAST_BODY" | jq -r '.id')"
+  check 200 "$customer sets one notebook set" \
+    -X PUT -H "X-Customer-Id: $customer" "${JSON_TYPE[@]}" --data '{"quantity":1}' \
+    "$BASE_URL/carts/$cart/lines/notebook-set"
+  check 201 "$customer checks out" -X POST -H "X-Customer-Id: $customer" -H "$(idem "$cart")" "$BASE_URL/carts/$cart/checkout"
+}
+
+# The admin key is required. A missing key and a wrong one are refused the same way.
+check 401 "Generating a coupon without the admin key is refused" -X POST "$BASE_URL/admin/coupons"
+check 401 "Generating a coupon with a wrong admin key is refused" \
+  -X POST -H 'X-Admin-Key: not-the-key' "$BASE_URL/admin/coupons"
+
+# Orders 3 and 4 do not reach a milestone, so there is nothing to reward yet.
+place_order example-erin
+place_order example-frank
+check 409 "With four orders no milestone is reached, so no coupon can be generated" \
+  -X POST "${ADMIN[@]}" "$BASE_URL/admin/coupons"
+
+# Order 5 reaches milestone 1. Its customer, Grace, is the one the coupon is issued to.
+place_order example-grace
+check 201 "The administrator generates the coupon for milestone 1" -X POST "${ADMIN[@]}" "$BASE_URL/admin/coupons"
+assert_body '.customerId == "example-grace" and .coupon.milestone == 1 and .coupon.percentOff == 10 and .unrewardedMilestonesRemaining == 0'
+COUPON="$(printf '%s' "$LAST_BODY" | jq -r '.coupon.code')"
+
+# The milestone is rewarded, so a second generate has nothing to issue.
+check 409 "A second generate is refused: no unrewarded milestone is left" -X POST "${ADMIN[@]}" "$BASE_URL/admin/coupons"
+
+# A coupon belongs to the customer who placed the milestone order. Grace sees hers, unredeemed, and
+# Carol, whose orders were not milestones, sees none.
+check 200 "Grace lists her coupons" "${GRACE[@]}" "$BASE_URL/coupons"
+assert_body --arg code "$COUPON" '.coupons | length == 1 and .[0].code == $code and .[0].redeemed == false'
+check 200 "Carol lists her coupons and sees none" "${CAROL[@]}" "$BASE_URL/coupons"
+assert_body '.coupons == []'
+
+# The administrator lists every coupon with the customer it was issued to.
+check 200 "The administrator lists all coupons" "${ADMIN[@]}" "$BASE_URL/admin/coupons"
+assert_body --arg code "$COUPON" '[.coupons[] | select(.code == $code) | .customerId] == ["example-grace"]'
+
 # Idempotency. A client that times out can retry a checkout with the same key and
 # the same request, and gets the original answer back, not a second order.
 ERIN=(-H 'X-Customer-Id: example-erin')

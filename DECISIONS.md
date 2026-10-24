@@ -91,7 +91,7 @@ Schema changes are serialised too. The migration runner applies all pending file
 
 **Why:** The rule turns the status into a retry policy. A 400 or 422 means the same request will fail again and must change first. A 409 means re-reading state and trying again is reasonable. A 402 means the customer has to change the payment. A 404 keeps one customer's data from being detectable by another.
 
-**Consequences:** Clients can write one handler per status class. Today the service uses 400, 404, 409 and 500; the other codes apply as the operations that need them land. Every new error must be assigned one of these meanings, and the contract's description states the rule so a reviewer can check it. The boundary between 409 and 422 takes judgement, and the rule is written down so that judgement is applied the same way each time.
+**Consequences:** Clients can write one handler per status class. Today the service uses 400, 401, 404, 409 and 500; the other codes apply as the operations that need them land. Every new error must be assigned one of these meanings, and the contract's description states the rule so a reviewer can check it. The boundary between 409 and 422 takes judgement, and the rule is written down so that judgement is applied the same way each time.
 
 ## Decision: Customer identity is claimed, not verified
 
@@ -235,6 +235,101 @@ The header is claimed, not verified: any caller can send any identifier. The rul
 **Why:** A join would show a past order with today's name and price, which is wrong for a record of a payment. Copying the figures costs a little storage and removes the dependency between an order and the catalogue. Storing the totals rather than recomputing them means the order keeps the figures the customer saw at checkout.
 
 **Consequences:** The same name and price appear in many rows, which is intended. A price or name change affects carts from then on and leaves placed orders as they were. The product identifier is kept so a line can still be traced to its product, but it is not used to produce any figure shown on an order.
+
+## Decision: Coupons belong to the customer who placed the milestone order
+
+**Context:** Every nth order earns a coupon, and the coupon must reach the customer whose order earned it. The service has no sign-in, so a customer cannot prove who they are when they ask for a coupon.
+
+**Options considered:**
+
+1. The customer asks for a coupon, and the service issues one if a milestone is open.
+2. The administrator names the customer who receives the coupon.
+3. The coupon goes to the customer who placed the order that reached the milestone, read from that order.
+
+**Choice:** Option 3. Generation reads the customer from the milestone order, so the generate request carries no body. Each customer sees their own coupons through `GET /api/coupons`.
+
+**Why:** A request for coupons would let any caller ask for them, and callers would race for the open one. An administrator naming recipients would make a reward depend on a choice rather than on a purchase. The order already records who placed it, so the reward follows data that exists and cannot be redirected by the request.
+
+**Consequences:** A customer with no order at a milestone never receives that coupon. Ownership is only as reliable as the customer identifier, which is claimed rather than verified, so the decision on customer identity applies here too. Coupons do not expire.
+
+## Decision: Milestones are counted under the order counter's lock
+
+**Context:** Two generate requests can run at the same time. Each must see the same count of orders and of issued coupons, and only one may issue the coupon for a given milestone. Otherwise both issue one, and the milestone is rewarded twice.
+
+**Options considered:**
+
+1. Read the order count and the issued count in one statement, then insert. No lock.
+2. Lock the order counter row with `SELECT ... FOR UPDATE` in its own transaction, then count, then insert.
+3. Rely on a unique constraint on the milestone, and let the losing insert fail.
+
+**Choice:** Option 2, with a unique constraint on the milestone column as a second safeguard. Generation takes the counter row before it reads anything, so generation requests run one at a time, and each sees the coupons the previous one committed.
+
+**Why:** Without a lock, both requests read the same count and both try to insert the same milestone. The constraint stops the duplicate, but the losing request then fails with a database error, which a client sees as a server failure. The lock makes the losing request read the new count and return a clear refusal. The constraint stays, because a rule enforced only in application code can be broken by a later change.
+
+**Consequences:** Generation waits for any checkout that is taking an order number, since checkout holds the same row until it commits. The generation transaction is short, so the wait is brief. If the constraint refuses an insert, the call is answered as `NO_ELIGIBLE_MILESTONE`, because that refusal means another call rewarded the milestone first. Normal operation does not reach that path.
+
+## Decision: Each generate call issues one coupon, for the oldest open milestone
+
+**Context:** Several milestones can be reached without a coupon, for example when no one has generated coupons for a while. A generate call could issue all of them, or one at a time. Either way, the response must say whether more are waiting.
+
+**Options considered:**
+
+1. Issue every outstanding coupon in one call.
+2. Issue one coupon per call, for the oldest milestone without one, and report how many reached milestones are still waiting.
+3. Let the caller name the milestone to issue.
+
+**Choice:** Option 2. The response carries the new coupon, the customer it went to, and `unrewardedMilestonesRemaining`. When no reached milestone is waiting, the call is refused with `NO_ELIGIBLE_MILESTONE`.
+
+**Why:** One coupon per call keeps each call small, and the remaining count tells the caller whether to call again. Naming a milestone would let a caller skip one or repeat one. Oldest first means every milestone is rewarded in the order it was earned. The refusal is a 409 under the rule for status codes: the request is valid, the answer changes once the state does, and the client should re-read before it tries again.
+
+**Consequences:** Clearing a backlog takes one call per milestone. Nothing issues coupons on a timer, so coupons appear only when an administrator asks for them.
+
+## Decision: The admin key is a placeholder, not authentication
+
+**Context:** Issuing coupons and listing every coupon are administrative actions, and they need a gate. The service has no accounts, sign-in or roles, and adding them is a larger change than this service needs yet.
+
+**Options considered:**
+
+1. Accounts with sign-in and roles.
+2. A shared secret from configuration, sent in a header with each administrative request.
+3. No gate: administrative routes open to any caller.
+
+**Choice:** Option 2. The secret comes from `ADMIN_KEY` at startup, and each administrative request sends it in `X-Admin-Key`. The service compares the two values as SHA-256 digests with `crypto.timingSafeEqual`, so the time taken does not reveal how much of the key matched. The web app asks for the key and keeps it in component memory until the page is reloaded. It never writes the key to browser storage.
+
+**Why:** Option 3 would leave coupons to anyone. Option 1 is more than this service needs yet. A shared secret keeps every administrative route behind one check. Hashing both sides gives equal lengths, which `timingSafeEqual` requires, and it keeps the key's length out of the comparison. Keeping the key out of browser storage limits where it can leak.
+
+**Consequences:** Anyone who holds the key can issue coupons. The key travels with every administrative request, so it should be used only over a trusted connection. The default, `local-admin-key`, is public and suits local development only. The key identifies no one, so the service cannot tell one administrator from another.
+
+## Decision: Coupon rules are read at startup
+
+**Context:** Coupons depend on two settings: the interval between milestones (n) and the percentage each coupon gives. Changing either while coupons exist could leave the arithmetic disagreeing with what has already been issued.
+
+**Options considered:**
+
+1. Store the rules in the database, so an administrator can change them while the service runs.
+2. Read them from the environment at startup, as the other settings are.
+
+**Choice:** Option 2, with `COUPON_EVERY_N_ORDERS` (default 5) and `COUPON_PERCENT_OFF` (default 10). Both are validated before the service accepts traffic.
+
+**Why:** A milestone is every nth order. If n changed after orders were placed, the milestones already passed would move, and the coupons issued for them would no longer match the orders that earned them. Settings in the environment are read once and visible in the deployment, like the rest of the configuration.
+
+**Consequences:** The interval is not meant to change once orders exist, because coupons already issued were earned under the old one. The percentage is copied into each coupon when it is issued, so a changed percentage applies only to coupons issued after the restart.
+
+## Decision: Coupon codes are random and avoid look-alike characters
+
+**Context:** Customers will type coupon codes, so a code must be hard to guess and easy to read out or copy by hand. Sequential codes reveal how many coupons exist and can be enumerated. Long codes are hard to read out.
+
+**Options considered:**
+
+1. Sequential numbers.
+2. UUIDs.
+3. Short random codes from an alphabet without look-alike characters.
+
+**Choice:** Option 3. A code is ten characters, drawn with `crypto.randomInt` from a 31-character alphabet that omits `0`, `1`, `I`, `L` and `O`. The code is the primary key of the coupons table, so one code cannot be stored twice.
+
+**Why:** Random codes cannot be enumerated and reveal nothing about volume. Leaving out look-alike characters means a code copied by hand is less likely to be mistyped. Ten characters from 31 gives about 8 × 10^14 codes, far more than the milestones will ever produce. `crypto.randomInt` draws without modulo bias, unlike a plain modulo of random bytes.
+
+**Consequences:** A code works for whoever presents it, so it is a bearer value. The service does not redeem coupons yet. The table already records which order redeemed a coupon, and redemption must check the owner as well as the code.
 
 ## Decision: Checkout retries are safe through an idempotency key
 
