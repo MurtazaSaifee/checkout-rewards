@@ -1,4 +1,5 @@
 import type { PoolClient } from 'pg';
+import { singleRow } from '../../db/rows.js';
 import type { SqlRunner } from '../../db/transaction.js';
 
 /** A coupon as its customer sees it. */
@@ -40,20 +41,14 @@ export async function lockOrderCount(client: PoolClient): Promise<number> {
   const { rows } = await client.query<{ orderCount: number }>(
     'SELECT last_order_number AS "orderCount" FROM order_counter WHERE id = 1 FOR UPDATE',
   );
-  const [row] = rows;
-  if (row === undefined) {
-    throw new Error('order_counter has no row, so the order count cannot be read');
-  }
+  const row = singleRow(rows, 'order_counter has no row, so the order count cannot be read');
   return row.orderCount;
 }
 
 /** How many coupons have been issued. Milestones are rewarded in order, so this is the last milestone rewarded. */
 export async function countIssuedCoupons(runner: SqlRunner): Promise<number> {
   const { rows } = await runner.query<{ issued: number }>('SELECT count(*)::int AS issued FROM coupons');
-  const [row] = rows;
-  if (row === undefined) {
-    throw new Error('count(*) produced no row');
-  }
+  const row = singleRow(rows, 'count(*) produced no row');
   return row.issued;
 }
 
