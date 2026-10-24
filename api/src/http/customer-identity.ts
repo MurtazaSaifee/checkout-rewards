@@ -1,17 +1,8 @@
 import type { Request, RequestHandler } from 'express';
 import { DomainError } from '../errors.js';
+import { NOT_BLANK, requiredHeader } from './required-header.js';
 
 export const CUSTOMER_ID_HEADER = 'X-Customer-Id';
-
-declare global {
-  // eslint-disable-next-line @typescript-eslint/no-namespace
-  namespace Express {
-    interface Request {
-      /** The calling customer. Set only on routes behind requireCustomerIdentity. */
-      customerId?: string;
-    }
-  }
-}
 
 export class CustomerIdRequiredError extends DomainError {
   constructor() {
@@ -24,6 +15,12 @@ export class CustomerIdRequiredError extends DomainError {
   }
 }
 
+const customerIdHeader = requiredHeader({
+  name: CUSTOMER_ID_HEADER,
+  pattern: NOT_BLANK,
+  missing: () => new CustomerIdRequiredError(),
+});
+
 /**
  * Takes the customer identifier from the header and records it on the request.
  * The identifier is claimed, not verified: it is a business rule, and real
@@ -33,21 +30,10 @@ export class CustomerIdRequiredError extends DomainError {
  * CUSTOMER_ID_REQUIRED rather than the validator's generic code.
  */
 export function requireCustomerIdentity(): RequestHandler {
-  return (req, _res, next) => {
-    const value = req.get(CUSTOMER_ID_HEADER);
-    if (value === undefined || value.trim() === '') {
-      next(new CustomerIdRequiredError());
-      return;
-    }
-    req.customerId = value;
-    next();
-  };
+  return customerIdHeader.guard();
 }
 
 /** The calling customer's identifier, for handlers behind requireCustomerIdentity. */
 export function customerIdOf(req: Request): string {
-  if (req.customerId === undefined) {
-    throw new Error('customerIdOf was called on a route that is not behind requireCustomerIdentity');
-  }
-  return req.customerId;
+  return customerIdHeader.valueOf(req);
 }
