@@ -152,3 +152,94 @@ Each decision gives the context, the options weighed, the choice, the reasons an
 **Why.** Every owner filter works the same whatever produced the identity, and the administrator check is a single function that a reviewer can read in one place.
 
 **Consequences.** Anyone who can set the customer header acts as that customer, and anyone who holds the admin key is an administrator. The admin key is not a security control. The default `local-admin-key` is a public development value, so a deployment that keeps the defaults is not safe.
+
+## Transactions, concurrency and idempotency
+
+**Isolation.** Writes run at Postgres's default, READ COMMITTED. A statement sees the rows committed before it starts. An update or `SELECT ... FOR UPDATE` that waited on a row re-checks the newest committed version of that row once the lock is released, so a waiter does not act on a state its holder replaced. The report is the one exception: it runs at `REPEATABLE READ READ ONLY` so that its figures come from a single snapshot. No other isolation level is set, and no statement or lock timeout is set.
+
+**Lock order.** A checkout takes its locks in this order:
+
+1. The idempotency key, through its unique insert. A concurrent attempt with the same key waits here.
+2. The cart row, with `FOR UPDATE`. This also serialises every edit to that cart.
+3. The product rows, one `UPDATE` per line, in ascending product id, which is the order in which the cart's lines are read.
+4. The coupon row, when a coupon is named.
+5. The counter row, as the last write before the order insert.
+
+Coupon generation takes only the counter row. Setting a cart line takes the cart row and reads stock without locking it. Every path that holds more than one lock takes them in this order, so no two paths can wait on each other in a cycle.
+
+**Waits.** Three cases rely on a waiter seeing committed state:
+
+- A checkout that waits behind another checkout of the same cart reads the cart's status after that checkout commits, and is refused with `CART_ALREADY_CHECKED_OUT`.
+- A checkout that waits for a coupon another checkout redeemed re-checks the redemption, and is refused with `COUPON_ALREADY_REDEEMED`.
+- A cart edit that waits behind a checkout re-reads the cart's status once that checkout ends. If the checkout placed the order, the edit is refused with `CART_ALREADY_CHECKED_OUT`, so the order holds exactly the lines that were checked out.
+
+**The checkout, in order.**
+
+1. Claim the idempotency key. A stored response is replayed. A key used with a different request is refused with `IDEMPOTENCY_KEY_REUSED`.
+2. Lock the cart and read its lines. A checked-out cart is refused. An empty cart is refused with `CART_EMPTY`.
+3. Take stock for each line in order. Every short line is collected, and any shortage refuses the checkout with `INSUFFICIENT_STOCK` and lists the short lines.
+4. If a coupon is named, lock it and check its owner and its redemption.
+5. Price the order. If the expected total sent differs, refuse with `PRICE_CHANGED`.
+6. Charge the payment. A decline is refused with `PAYMENT_DECLINED`.
+7. Take the next order number.
+8. Insert the order, mark the coupon redeemed, insert the lines and mark the cart checked out. The order insert also carries a unique constraint on the coupon code, and a violation gives the same answer as the lock in step 4.
+9. Store the response against the key, and commit.
+
+Any error before step 9 rolls back the whole transaction, including the key claim.
+
+**Replays.** A replay sends the stored body through the same JSON serialiser. The bytes match the first response because the body holds only strings, integers, nulls and arrays. The idempotency test compares the raw text of both responses, so a change that serialised the body differently would fail it.
+
+**Concurrency tests.** These send simultaneous requests and check the outcome:
+
+- `checkout.test.ts`: "lets exactly as many checkouts succeed as stock allows, fails the rest with INSUFFICIENT_STOCK, and leaves stock at zero"
+- `checkout.test.ts`: "is either included in the order or rejected, and the cart and the order always agree"
+- `checkout-idempotency.test.ts`: "places one order when ten simultaneous checkouts share a key, takes the stock once, and returns identical responses"
+- `checkout-idempotency.test.ts`: "makes a retry that arrives while the first attempt is still running wait for it, then replays its response"
+- `checkout-coupons.test.ts`: "lets exactly one checkout redeem the coupon and answers the other with 422 COUPON_ALREADY_REDEEMED, in every round"
+- `coupons.test.ts`: "issues exactly one coupon per unrewarded milestone and refuses the rest with NO_ELIGIBLE_MILESTONE"
+- `coupons.test.ts`: "refuses with 409 NO_ELIGIBLE_MILESTONE when the unique milestone constraint rejects the insert"
+- `cart-lines.test.ts`: "keeps a single line at the requested quantity when identical requests arrive at the same moment"
+- `cart-lines.test.ts`: "checks stock only as a courtesy, so two customers can each set a quantity up to the stock"
+- `admin-report-reconciliation.test.ts`: "counts every placed order, gapless from one, and the order count equals the highest order number"
+
+Simultaneous requests make overlap likely, but the tests do not choose an interleaving. Each runs several rounds and checks the outcome of every round. The first item in what to examine next covers deterministic interleavings.
+
+**Money and rounding.**
+
+- Every amount is an integer number of cents, stored in `integer` columns with non-negative checks: `unit_price_cents`, `line_amount`, `subtotal_cents`, `discount_cents` and `total_cents`.
+- A line amount is the unit price times the quantity. The subtotal is the sum of the line amounts.
+- The discount is worked out once, on the subtotal, as `floor(subtotal × percent / 100)`, using integer arithmetic. Ten percent of 1,995 cents is 199.5 cents and gives 199. Two lines of 995 cents give a subtotal of 1,990 and a discount of 199. Rounding each line first would give 198.
+- The total is the subtotal less the discount. The percentage is at most 100, so the total is never negative.
+- Report sums are `bigint` in Postgres. The repository converts them to numbers, which is exact for any total below 2^53 cents.
+- The amount columns are 32-bit `integer`, so one line or order above 2,147,483,647 cents is refused by Postgres. The service reports that as `INTERNAL_ERROR` rather than as a domain error. This is a known gap.
+- The web app repeats the discount formula to compute the expected total. The server's comparison is the authority: a mismatch in the web copy is refused as `PRICE_CHANGED` and is never charged.
+
+## Errors and the status rule
+
+Every error is an RFC 9457 Problem Details document sent as `application/problem+json`. It carries a `type` URI, a `title`, a `status`, a `detail`, a stable `code` and a `requestId`. The `type` host is a placeholder. Some codes add extension members: `shortLines` for `INSUFFICIENT_STOCK`, `currentTotalCents` for `PRICE_CHANGED`, and `errors` for `VALIDATION_FAILED`.
+
+Each domain error fixes its status, code and title in one place, so a status cannot drift away from its code. Requests and responses are checked against `api/openapi.yaml`, whose `ErrorCode` enum lists the same 23 codes as the server.
+
+| Status | Codes | Meaning |
+| --- | --- | --- |
+| 400 | `VALIDATION_FAILED`, `MALFORMED_JSON`, `CUSTOMER_ID_REQUIRED`, `IDEMPOTENCY_KEY_REQUIRED` | The request is malformed or lacks a required header. |
+| 401 | `ADMIN_KEY_INVALID` | The admin key is missing or wrong. |
+| 402 | `PAYMENT_DECLINED` | The gateway declined the payment. |
+| 404 | `CART_NOT_FOUND`, `PRODUCT_NOT_FOUND`, `ORDER_NOT_FOUND`, `ROUTE_NOT_FOUND` | No such cart, product or order is visible to the caller, and no such route exists. |
+| 405 | `METHOD_NOT_ALLOWED` | The route exists, but not for this method. |
+| 409 | `CART_ALREADY_CHECKED_OUT`, `INSUFFICIENT_STOCK`, `PRICE_CHANGED`, `NO_ELIGIBLE_MILESTONE` | The state has changed, or does not allow the action now. |
+| 413 | `PAYLOAD_TOO_LARGE` | The body is larger than the limit. |
+| 415 | `UNSUPPORTED_MEDIA_TYPE` | The body is not JSON. |
+| 422 | `CART_EMPTY`, `IDEMPOTENCY_KEY_REUSED`, `COUPON_NOT_FOUND`, `COUPON_NOT_OWNED`, `COUPON_ALREADY_REDEEMED` | The request is well formed but cannot be acted on as sent. |
+| 500 | `INTERNAL_ERROR` | An unexpected failure. A checkout that fails this way has rolled back. |
+
+The status tells the client what to do next:
+
+- **400 and 422** mean the request must change. Sending it again unchanged gets the same answer.
+- **409** means the state moved. The client reads the state again and decides afresh. A checkout refused with 409 has placed nothing.
+- **402** means the payment must change. The rest of the request can stay the same, and the cart stays open.
+- **401** means the admin key must be corrected.
+- **404** for another customer's cart or order hides that it exists. A coupon is the exception, as the material decisions explain.
+- **500** from a checkout means nothing was placed, so the same `Idempotency-Key` can be retried.
+
+Each checkout writes one outcome line: `ORDER_PLACED`, `IDEMPOTENT_REPLAY`, or the code of its refusal. An operator can count outcomes from the logs without reading response bodies. An unexpected failure is logged at error level by the error handler instead.
