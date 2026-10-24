@@ -660,6 +660,16 @@ components:
         means the defaults.
       additionalProperties: false
       properties:
+        expectedTotalCents:
+          type: integer
+          minimum: 0
+          description: >-
+            The total the customer saw, in cents. Optional. When it is sent and
+            differs from the total at current prices, the checkout is refused
+            with 409 PRICE_CHANGED, which carries the current total in
+            currentTotalCents. Nothing is placed, so the same cart can be
+            checked out again at that total.
+          example: 3600
         paymentToken:
           type: string
           enum:
@@ -823,6 +833,7 @@ components:
         - COUPON_NOT_FOUND
         - COUPON_NOT_OWNED
         - COUPON_ALREADY_REDEEMED
+        - PRICE_CHANGED
     Problem:
       type: object
       description: RFC 9457 Problem Details, extended with `code` and `requestId`.
@@ -885,7 +896,10 @@ components:
         after the client re-reads the resource. CART_ALREADY_CHECKED_OUT means
         the cart was checked out. INSUFFICIENT_STOCK lists each short line in
         shortLines, with the requested and available quantities.
-        NO_ELIGIBLE_MILESTONE means no reached milestone is waiting for a coupon.
+        PRICE_CHANGED means the total at current prices differs from the
+        expectedTotalCents the checkout sent; currentTotalCents holds that
+        current total, and nothing was placed. NO_ELIGIBLE_MILESTONE means no
+        reached milestone is waiting for a coupon.
       headers:
         X-Request-Id:
           $ref: '#/components/headers/RequestId'

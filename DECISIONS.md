@@ -367,3 +367,36 @@ Storing only successes follows from the transaction. A failed checkout, whether 
 The stored body is text, not a re-serialised order, so a replay matches the response the client first received even if the serialiser changes later. The fingerprint covers the cart, so a key reused for a different cart is treated as a client bug rather than replayed. It covers the options as well, so an option added later changes the request identity without any change to the key logic.
 
 **Consequences:** A retry that arrives while the first attempt is still running waits for it, so a slow first attempt also delays its retries. The wait ends when the first attempt commits or rolls back. Requests without the header are refused with `IDEMPOTENCY_KEY_REQUIRED` (400), which breaks any client that does not send one. Keys never expire, so the table gains one row per placed order. A retention window would be a later decision: a retry after the window would place a new order, so the window must outlast any retry a client makes. The key is not a secret that protects the order. The customer header is claimed too, so anyone who knows a customer's identifier can already read that customer's orders. A new key on a checked-out cart is still refused with `CART_ALREADY_CHECKED_OUT`, because the key protects retries of one attempt. The one-checkout-per-cart rule still holds through the cart lock and the unique cart identifier on orders.
+
+## Decision: A checkout refuses a total the customer did not see
+
+**Context:** Prices change while a cart is open, and carts store no prices, so the cart shows the price in force at each read. A customer who reviews a total and then checks out can be charged a different amount if the price changes in between, and nothing tells them. The customer needs either the amount they saw, or a refusal that names the amount now.
+
+**Options considered:**
+
+1. Lock the prices in the cart when each line is set, and charge the locked prices at checkout.
+2. Charge the live price at checkout with no guard. The customer pays whatever the price is at that moment.
+3. Let the client send the total it showed, as an optional expected total. Compare it with the final total inside the checkout transaction, and refuse a mismatch with `409 PRICE_CHANGED`, which carries the current total.
+
+**Choice:** Option 3. The expected total is optional. When it is sent and differs from the final total, nothing is placed and the response names the current total. When it is omitted, checkout runs at current prices as it does without the guard.
+
+The comparison runs after the stock is taken and after any coupon discount is applied, and immediately before the charge. The expected total is the total the customer saw, and with a coupon that is the discounted figure, so the comparison uses the final total and not the subtotal. Comparing with the subtotal would refuse a correct discounted total, or accept an undiscounted one. Running the comparison before the charge means a changed price is never charged, and no later step runs for a refused checkout.
+
+**Why:** Option 1 contradicts the decision that carts store no prices. A copy of the price held in the cart drifts from the product, and an open cart could be checked out at a price the store no longer offers for as long as it stayed open. Option 2 leaves the amount to the store alone. The customer can be charged more than they agreed to, and has no means of knowing. Option 3 keeps prices live and makes the agreement explicit: the customer pays the amount they saw, or nothing is placed. The comparison reads the same prices that the order snapshot records, inside the same transaction, so the figure compared is the figure charged and stored. The refusal rolls back the whole transaction, so stock, the claimed idempotency key and the order number are as they were, and the same cart can be checked out again with the same key at the new total.
+
+**Consequences:** A checkout that sends a stale total is refused, and the customer must see the new total and check out again. The web app sends the subtotal its cart view shows, and after a refusal it reads the cart again so the new total appears there. A client that omits the field keeps the old behaviour and can still be charged a price it did not see. Because the stock step comes first, a cart that is both short of stock and repriced is answered with the stock refusal. A price that changes after this transaction has read it is simply later than the checkout: the order records and charges the price that was read, and that is the price the customer was shown.
+
+## Decision: Products change in the database, and admin product editing is deferred
+
+**Context:** Testers need to change a price or a stock level to see `PRICE_CHANGED` and `INSUFFICIENT_STOCK` happen. Editing products through the API would need its own contract, authorisation, validation and tests, and it would add a second writer to the catalogue. This service exists for checkout correctness, and the catalogue is only its input.
+
+**Options considered:**
+
+1. An administrator endpoint to create and edit products, guarded by the admin key.
+2. A documented database statement for changing a price or stock level, relying on the constraints the database already enforces.
+
+**Choice:** Option 2. The README shows the statements. The contract has no operation that edits products, and the tests that need a changed price make the change directly in the database.
+
+**Why:** A product endpoint would bring a set of questions that have nothing to do with checkout: which fields may change, what a change does to carts that are open, and how a change is recorded. Checkout already handles a price that changes while a cart is open. The database refuses a negative price or stock level and a non-integer amount, so the statements cannot store values the service could not account for. The admin key is a placeholder rather than authentication, so an endpoint guarded by it would present a control that is not one.
+
+**Consequences:** Products cannot be changed through the API, and nothing records who changed a price or when. A statement run against the database bypasses the contract's validation, so a bad value is refused by a database constraint rather than with a Problem Details answer. Admin product editing is deferred. A store run for customers would need it, and the price guard above would then protect them from any change it makes.

@@ -15,7 +15,7 @@ import { CouponAlreadyRedeemedError } from '../coupons/coupon.errors.js';
 import { markCouponRedeemed } from '../coupons/coupons.repository.js';
 import { lockRedeemableCoupon } from '../coupons/coupons.service.js';
 import { type CheckoutOptions } from './checkout.options.js';
-import { IdempotencyKeyReusedError, PaymentDeclinedError } from './checkout.errors.js';
+import { IdempotencyKeyReusedError, PaymentDeclinedError, PriceChangedError } from './checkout.errors.js';
 import {
   claimIdempotencyKey,
   storeIdempotentResponse,
@@ -124,6 +124,14 @@ export async function checkOut(
         ? undefined
         : await lockRedeemableCoupon(client, input.options.couponCode, input.customerId);
     const amounts = priceOrder(lines, coupon?.percentOff);
+
+    // The price guard sits after the discount, because the expected total is the
+    // total the customer saw, which is the discounted one when a coupon applies. It
+    // sits before the charge, so a changed price is never charged. A refusal throws
+    // here, and the rollback returns the stock taken above and frees the claimed key.
+    if (input.options.expectedTotalCents !== undefined && input.options.expectedTotalCents !== amounts.totalCents) {
+      throw new PriceChangedError(amounts.totalCents);
+    }
 
     // Step 6: charge the total through the payment gateway, inside the transaction.
     // A decline throws, so the stock taken above, the coupon and the claimed key

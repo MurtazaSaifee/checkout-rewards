@@ -24,7 +24,8 @@ export type DomainErrorCode =
   | 'PAYMENT_DECLINED'
   | 'COUPON_NOT_FOUND'
   | 'COUPON_NOT_OWNED'
-  | 'COUPON_ALREADY_REDEEMED';
+  | 'COUPON_ALREADY_REDEEMED'
+  | 'PRICE_CHANGED';
 
 /**
  * Every stable error code a client can receive. The ErrorCode enum in
