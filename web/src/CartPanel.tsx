@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import type { CartLine, PaymentToken } from './api/client';
+import { type CartLine, currentTotalOf, type PaymentToken } from './api/client';
 import { ErrorDetails } from './ErrorDetails';
 import { formatCents } from './money';
 import type { CartController } from './useCart';
@@ -8,6 +8,8 @@ export function CartPanel({ cart }: { cart: CartController }) {
   const { state, editError, checkoutError } = cart;
   // The tester's choice of gateway answer for the next checkout. Approval is the default.
   const [paymentToken, setPaymentToken] = useState<PaymentToken>('tok_ok');
+  // The new total, when the last checkout was refused because the prices changed.
+  const newTotal = currentTotalOf(checkoutError);
 
   return (
     <section aria-labelledby="cart-heading">
@@ -63,6 +65,12 @@ export function CartPanel({ cart }: { cart: CartController }) {
             <p>This cart has been checked out and can no longer be changed.</p>
           ) : null}
           {editError !== undefined ? <ErrorDetails error={editError} /> : null}
+          {newTotal !== undefined ? (
+            <p role="status">
+              The price changed before checkout, so nothing was placed. The new total is{' '}
+              {formatCents(newTotal)}. Check out again to pay it.
+            </p>
+          ) : null}
           {checkoutError !== undefined ? <ErrorDetails error={checkoutError} /> : null}
           {state.cart.lines.length === 0 ? (
             <p>The cart is empty.</p>

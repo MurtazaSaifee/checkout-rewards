@@ -3,6 +3,7 @@ import {
   type Cart,
   checkOutCart,
   createCart,
+  currentTotalOf,
   getCart,
   newIdempotencyKey,
   type Order,
@@ -128,10 +129,12 @@ export function useCart(customer: CustomerId, options: CartOptions): CartControl
   const checkOut = useCallback((paymentToken: PaymentToken) => {
     if (state.kind !== 'ready') return;
     const cartId = state.cart.id;
+    // The total the cart view shows is the total the customer is checking out at.
+    const expectedTotalCents = state.cart.subtotalCents;
     setEditError(undefined);
     setCheckoutError(undefined);
     // Each click is a new attempt, so it gets a new key.
-    checkOutCart(customer, cartId, newIdempotencyKey(), paymentToken).then(
+    checkOutCart(customer, cartId, newIdempotencyKey(), paymentToken, expectedTotalCents).then(
       (order) => {
         onOrderPlaced(order);
         // The cart is checked out now. Read it back, so the panel shows the server's state.
@@ -146,6 +149,18 @@ export function useCart(customer: CustomerId, options: CartOptions): CartControl
       },
       (error: unknown) => {
         setCheckoutError(error);
+        if (currentTotalOf(error) !== undefined) {
+          // The prices changed, so the cart view is read again: the tester sees the new
+          // total there, and the next check out sends it.
+          getCart(customer, cartId).then(
+            (cart) => {
+              setState({ kind: 'ready', cart });
+            },
+            (refreshError: unknown) => {
+              setState({ kind: 'failed', error: refreshError });
+            },
+          );
+        }
       },
     );
   }, [customer, onOrderPlaced, state]);
