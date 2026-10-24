@@ -1,15 +1,9 @@
 import { useState } from 'react';
-import {
-  type Coupon,
-  checkOutCart,
-  createCart,
-  listMyCoupons,
-  newIdempotencyKey,
-  setCartLineQuantity,
-} from './api/client';
+import { type Coupon, listMyCoupons } from './api/client';
 import type { CustomerId } from './customer';
 import { ErrorDetails } from './ErrorDetails';
-import { countLabels, type Outcome, placed, refusal } from './outcomes';
+import type { Outcome } from './outcomes';
+import { clampCount, fireCheckouts, prepareCarts, RaceTables } from './raceCheckouts';
 
 /** A product with plenty of stock, so the carts do not run short and only the coupon decides the race. */
 const RACE_PRODUCT = 'notebook-set';
@@ -50,26 +44,12 @@ export function CouponRaceTool({ customer, onFinished }: { customer: CustomerId;
         return;
       }
 
-      const carts = clampCarts(input);
       // Fresh carts, one unit of the product each. The customer's own cart is never touched.
-      const prepared = await Promise.allSettled(
-        Array.from({ length: carts }, () => prepareCart(customer)),
-      );
-      const cartIds = prepared.flatMap((result) => (result.status === 'fulfilled' ? [result.value] : []));
-      const setup = prepared.flatMap((result) =>
-        result.status === 'rejected' ? [refusal(result.reason)] : [],
-      );
-
+      const carts = clampCount(input, { min: MIN_CARTS, max: MAX_CARTS, fallback: DEFAULT_CARTS });
+      const { cartIds, setup } = await prepareCarts(customer, RACE_PRODUCT, carts);
       // Every checkout starts in the same moment, each with its own key and the same coupon.
       // No expected total is sent, so the race is decided by the coupon alone.
-      const settled = await Promise.allSettled(
-        cartIds.map((cartId) =>
-          checkOutCart(customer, cartId, newIdempotencyKey(), 'tok_ok', undefined, coupon.code),
-        ),
-      );
-      const outcomes = settled.map((result) =>
-        result.status === 'fulfilled' ? placed(result.value) : refusal(result.reason),
-      );
+      const outcomes = await fireCheckouts(customer, cartIds, coupon.code);
 
       setPhase({ kind: 'done', result: { coupon, carts, setup, outcomes } });
     } catch (error: unknown) {
@@ -122,10 +102,6 @@ export function CouponRaceTool({ customer, onFinished }: { customer: CustomerId;
 
 function CouponRaceSummary({ result }: { result: CouponRaceResult }) {
   const placedCount = result.outcomes.filter((outcome) => outcome.placed).length;
-  const counts = countLabels([
-    ...result.setup.map((outcome) => ({ ...outcome, label: `set-up: ${outcome.label}` })),
-    ...result.outcomes,
-  ]);
   const verdict =
     placedCount === 1
       ? 'Exactly one order was placed, so the coupon was redeemed once.'
@@ -143,61 +119,7 @@ function CouponRaceSummary({ result }: { result: CouponRaceResult }) {
           ? ` ${result.setup.length} carts were refused before checkout, so they were not checked out.`
           : ''}
       </p>
-      <table>
-        <thead>
-          <tr>
-            <th scope="col">Outcome</th>
-            <th scope="col">Count</th>
-          </tr>
-        </thead>
-        <tbody>
-          {counts.map(([label, count]) => (
-            <tr key={label}>
-              <td>{label}</td>
-              <td>{count}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      <table>
-        <thead>
-          <tr>
-            <th scope="col">Stage</th>
-            <th scope="col">Outcome</th>
-            <th scope="col">Detail</th>
-          </tr>
-        </thead>
-        <tbody>
-          {result.setup.map((outcome, index) => (
-            <tr key={`set-up-${index}`}>
-              <td>set-up {index + 1}</td>
-              <td>{outcome.label}</td>
-              <td>{outcome.detail}</td>
-            </tr>
-          ))}
-          {result.outcomes.map((outcome, index) => (
-            <tr key={`checkout-${index}`}>
-              <td>checkout {index + 1}</td>
-              <td>{outcome.label}</td>
-              <td>{outcome.detail}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      <RaceTables setup={result.setup} outcomes={result.outcomes} />
     </>
   );
-}
-
-/** Creates a cart holding one unit of the race product. Resolves to the cart's identifier. */
-async function prepareCart(customer: CustomerId): Promise<string> {
-  const cart = await createCart(customer);
-  await setCartLineQuantity(customer, cart.id, RACE_PRODUCT, 1);
-  return cart.id;
-}
-
-/** The count typed into the form, kept within the range the race supports. */
-function clampCarts(input: string): number {
-  const value = Math.trunc(Number(input));
-  if (!Number.isFinite(value)) return DEFAULT_CARTS;
-  return Math.min(MAX_CARTS, Math.max(MIN_CARTS, value));
 }

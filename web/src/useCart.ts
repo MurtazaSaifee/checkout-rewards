@@ -59,14 +59,7 @@ export function useCart(customer: CustomerId, options: CartOptions): CartControl
     if (cartId === undefined) return;
 
     const controller = new AbortController();
-    getCart(customer, cartId, controller.signal).then(
-      (cart) => {
-        setState({ kind: 'ready', cart });
-      },
-      (error: unknown) => {
-        if (!controller.signal.aborted) setState({ kind: 'failed', error });
-      },
-    );
+    readCartInto(setState, customer, cartId, controller.signal);
     return () => {
       controller.abort();
     };
@@ -89,14 +82,7 @@ export function useCart(customer: CustomerId, options: CartOptions): CartControl
   const refresh = useCallback(() => {
     if (state.kind !== 'ready') return;
     setEditError(undefined);
-    getCart(customer, state.cart.id).then(
-      (cart) => {
-        setState({ kind: 'ready', cart });
-      },
-      (error: unknown) => {
-        setState({ kind: 'failed', error });
-      },
-    );
+    readCartInto(setState, customer, state.cart.id);
   }, [customer, state]);
 
   const edit = useCallback(
@@ -140,40 +126,47 @@ export function useCart(customer: CustomerId, options: CartOptions): CartControl
     const key = newIdempotencyKey();
     expectedTotalFor(customer, subtotalCents, couponCode)
       .then((expectedTotalCents) =>
-        checkOutCart(customer, cartId, key, paymentToken, expectedTotalCents, couponCode),
+        checkOutCart(customer, cartId, key, { paymentToken, expectedTotalCents, couponCode }),
       )
       .then(
-      (order) => {
-        onOrderPlaced(order);
-        // The cart is checked out now. Read it back, so the panel shows the server's state.
-        getCart(customer, cartId).then(
-          (cart) => {
-            setState({ kind: 'ready', cart });
-          },
-          (error: unknown) => {
-            setState({ kind: 'failed', error });
-          },
-        );
-      },
-      (error: unknown) => {
-        setCheckoutError(error);
-        if (currentTotalOf(error) !== undefined) {
-          // The prices changed, so the cart view is read again: the tester sees the new
-          // total there, and the next check out sends it.
-          getCart(customer, cartId).then(
-            (cart) => {
-              setState({ kind: 'ready', cart });
-            },
-            (refreshError: unknown) => {
-              setState({ kind: 'failed', error: refreshError });
-            },
-          );
-        }
-      },
-    );
+        (order) => {
+          onOrderPlaced(order);
+          // The cart is checked out now. Read it back, so the panel shows the server's state.
+          readCartInto(setState, customer, cartId);
+        },
+        (error: unknown) => {
+          setCheckoutError(error);
+          if (currentTotalOf(error) !== undefined) {
+            // The prices changed, so the cart view is read again: the tester sees the new
+            // total there, and the next check out sends it.
+            readCartInto(setState, customer, cartId);
+          }
+        },
+      );
   }, [customer, onOrderPlaced, state]);
 
   return { state, editError, checkoutError, createNewCart, refresh, setQuantity, removeLine, checkOut };
+}
+
+/**
+ * Reads a cart from the server into the panel: shown when it arrives, or the failure when
+ * it does not. A failure is not shown once the signal has aborted, because the panel has
+ * then moved on to another cart.
+ */
+function readCartInto(
+  setState: (next: CartState) => void,
+  customer: CustomerId,
+  cartId: string,
+  signal?: AbortSignal,
+): void {
+  getCart(customer, cartId, signal).then(
+    (cart) => {
+      setState({ kind: 'ready', cart });
+    },
+    (error: unknown) => {
+      if (!signal?.aborted) setState({ kind: 'failed', error });
+    },
+  );
 }
 
 /**
