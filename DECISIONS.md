@@ -125,9 +125,9 @@ Each decision gives the context, the options weighed, the choice, the reasons an
 
 **Choice.** (b). Codes are ten characters drawn with a cryptographic random source from a 31-character alphabet, which leaves out I, L, O, 0 and 1.
 
-**Why.** A code is typed by the customer who holds it, so the two answers help that customer. The codes are long enough that guessing a real one is impractical, so the distinct answer mainly reveals the existence of a code to someone who already holds it or has guessed it.
+**Why.** A code is typed by the customer who holds it, so a distinct answer lets them tell a typing mistake from a code that is not theirs. Codes are random over 31 to the power of ten values, so a guess almost never hits a real code.
 
-**Consequences.** A guessed code shows whether it exists. Nothing rate-limits coupon attempts, which is listed under known gaps. Other resources, such as carts and orders, answer a foreign identifier with 404 instead, because they are looked up by identifier and a code is typed by hand.
+**Consequences.** The answer does reveal whether a guessed code exists, and nothing rate-limits attempts; that is listed under known gaps. Carts and orders answer a foreign identifier with 404 instead, because they are looked up by identifier rather than typed.
 
 ### 6. Reports are computed on each request, in one read-only snapshot
 
@@ -169,7 +169,7 @@ Coupon generation takes only the counter row. Setting a cart line takes the cart
 
 **Waits.** Three cases rely on a waiter seeing committed state:
 
-- A checkout that waits behind another checkout of the same cart reads the cart's status after that checkout commits, and is refused with `CART_ALREADY_CHECKED_OUT`.
+- A checkout that waits behind another checkout of the same cart reads the cart's status once that checkout ends. If it placed the order, the waiting checkout is refused with `CART_ALREADY_CHECKED_OUT`.
 - A checkout that waits for a coupon another checkout redeemed re-checks the redemption, and is refused with `COUPON_ALREADY_REDEEMED`.
 - A cart edit that waits behind a checkout re-reads the cart's status once that checkout ends. If the checkout placed the order, the edit is refused with `CART_ALREADY_CHECKED_OUT`, so the order holds exactly the lines that were checked out.
 
@@ -206,7 +206,7 @@ Simultaneous requests make overlap likely, but the tests do not choose an interl
 
 **Money and rounding.**
 
-- Every amount is an integer number of cents, stored in `integer` columns with non-negative checks: `unit_price_cents`, `line_amount`, `subtotal_cents`, `discount_cents` and `total_cents`.
+- Every amount is an integer number of cents, stored in `integer` columns with non-negative checks: `unit_price_cents`, `line_amount_cents`, `subtotal_cents`, `discount_cents` and `total_cents`.
 - A line amount is the unit price times the quantity. The subtotal is the sum of the line amounts.
 - The discount is worked out once, on the subtotal, as `floor(subtotal × percent / 100)`, using integer arithmetic. Ten percent of 1,995 cents is 199.5 cents and gives 199. Two lines of 995 cents give a subtotal of 1,990 and a discount of 199. Rounding each line first would give 198.
 - The total is the subtotal less the discount. The percentage is at most 100, so the total is never negative.
