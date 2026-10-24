@@ -80,6 +80,14 @@ TEST_DATABASE_URL=postgres://postgres:postgres@localhost:5432/postgres npm test
 
 `TEST_DATABASE_URL` is an administrative connection, so its role needs permission to create and drop databases. It defaults to the URL above.
 
+The Compose stack does not publish its database port. If you have no local Postgres, start a throwaway one for the tests:
+
+```sh
+docker run -d --rm --name checkout-rewards-testdb -p 5432:5432 -e POSTGRES_PASSWORD=postgres postgres:18.6
+```
+
+Stop it with `docker stop checkout-rewards-testdb`.
+
 The other checks run the same way as CI:
 
 ```sh
