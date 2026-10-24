@@ -1,10 +1,11 @@
+import request from 'supertest';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { useTestDatabase } from '../helpers/test-database.js';
 import { getReport } from '../helpers/admin-api.js';
 import { createCart, setLine } from '../helpers/cart-api.js';
-import { checkOut, placeOrder } from '../helpers/checkout-api.js';
-import { generateCoupon, listMyCoupons } from '../helpers/coupon-api.js';
-import type { Coupon, Report } from '../helpers/api-types.js';
+import { checkOut, listMyOrders, placeOrder } from '../helpers/checkout-api.js';
+import { generateCoupon, listAllCoupons, listMyCoupons } from '../helpers/coupon-api.js';
+import type { Coupon, Problem, ProductListing, Report } from '../helpers/api-types.js';
 
 describe('the admin report of a store with no orders', () => {
   const database = useTestDatabase({ coupons: { everyNOrders: 2 } });
@@ -59,6 +60,63 @@ describe('the admin report of placed orders without coupons', () => {
       discountCents: 0,
       netRevenueCents: 12400,
     });
+  });
+});
+
+describe('the admin key on the report', () => {
+  const database = useTestDatabase();
+
+  it.each([
+    ['without the admin key', null],
+    ['with a wrong admin key', 'not-the-admin-key'],
+  ])('answers the report %s with 401 ADMIN_KEY_INVALID', async (_label, key) => {
+    const response = await getReport(database.app, key);
+
+    expect(response.status).toBe(401);
+    expect(response.body as Problem).toMatchObject({ status: 401, code: 'ADMIN_KEY_INVALID' });
+  });
+});
+
+describe('reading the report', () => {
+  const database = useTestDatabase({ coupons: { everyNOrders: 2 } });
+
+  beforeAll(async () => {
+    await placeOrder(database.app, 'alice', [['classic-tee', 1]]);
+    await placeOrder(database.app, 'bob', [['canvas-tote', 1]]);
+  });
+
+  it('answers two consecutive requests with identical bodies', async () => {
+    const first = await getReport(database.app);
+    const second = await getReport(database.app);
+
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    expect(second.text).toBe(first.text);
+  });
+
+  it('changes no state: orders, coupons and stock are the same after any number of reads', async () => {
+    const productsBefore = (await request(database.app).get('/api/products')).body as ProductListing;
+    const couponsBefore = (await listAllCoupons(database.app)).body;
+    const aliceOrdersBefore = (await listMyOrders(database.app, 'alice')).body;
+
+    await getReport(database.app);
+    await getReport(database.app);
+    await getReport(database.app);
+
+    expect((await request(database.app).get('/api/products')).body).toEqual(productsBefore);
+    expect((await listAllCoupons(database.app)).body).toEqual(couponsBefore);
+    expect((await listMyOrders(database.app, 'alice')).body).toEqual(aliceOrdersBefore);
+  });
+
+  it('calculates each request afresh, so a checkout placed after a read is counted by the next read', async () => {
+    const before = (await getReport(database.app)).body as Report;
+
+    await placeOrder(database.app, 'carol', [['ceramic-mug', 1]]);
+    const after = (await getReport(database.app)).body as Report;
+
+    expect(after.orderCount).toBe(before.orderCount + 1);
+    expect(after.grossRevenueCents).toBe(before.grossRevenueCents + 1200);
+    expect(after.netRevenueCents).toBe(before.netRevenueCents + 1200);
   });
 });
 
