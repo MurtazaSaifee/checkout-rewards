@@ -1,6 +1,8 @@
 import express, { type Express } from 'express';
 import type { Pool } from 'pg';
+import type { CouponRules } from './config.js';
 import { contractValidator } from './http/contract.js';
+import { requireAdminKey } from './http/admin-key.js';
 import { requireCustomerIdentity } from './http/customer-identity.js';
 import { problemErrorHandler } from './http/error-handler.js';
 import { notFoundHandler } from './http/not-found.js';
@@ -14,6 +16,10 @@ import { productsRouter } from './modules/products/products.routes.js';
 export interface AppDependencies {
   db: Pool;
   logger: Logger;
+  /** The key every admin operation requires in the admin key header. */
+  adminKey: string;
+  /** Milestone frequency and percentage, fixed for the life of the process. */
+  coupons: CouponRules;
 }
 
 /** Builds the HTTP application. Tests and the server both enter here. */
@@ -26,6 +32,8 @@ export function createApp(deps: AppDependencies): Express {
   // Ahead of the contract validator, so a missing customer header gets its own code.
   app.use('/api/carts', requireCustomerIdentity());
   app.use('/api/orders', requireCustomerIdentity());
+  // The same for admin operations: a missing or wrong key gets ADMIN_KEY_INVALID.
+  app.use('/api/admin', requireAdminKey(deps.adminKey));
   app.use(contractValidator());
 
   app.use('/api', productsRouter(deps.db));

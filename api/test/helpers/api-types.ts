@@ -56,3 +56,28 @@ export interface ShortLine {
   requested: number;
   available: number;
 }
+
+/** A coupon as its customer sees it. */
+export interface Coupon {
+  code: string;
+  percentOff: number;
+  milestone: number;
+  redeemed: boolean;
+}
+
+/** The response to generating a coupon. */
+export interface GeneratedCoupon {
+  coupon: Coupon;
+  customerId: string;
+  unrewardedMilestonesRemaining: number;
+}
+
+/** A coupon as an administrator sees it, with the customer it was issued to. */
+export interface AdminCoupon {
+  code: string;
+  percentOff: number;
+  milestone: number;
+  customerId: string;
+  issuedAt: string;
+  redeemedByOrderId: string | null;
+}

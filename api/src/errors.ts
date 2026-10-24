@@ -16,7 +16,9 @@ export type DomainErrorCode =
   | 'PRODUCT_NOT_FOUND'
   | 'INSUFFICIENT_STOCK'
   | 'CART_EMPTY'
-  | 'ORDER_NOT_FOUND';
+  | 'ORDER_NOT_FOUND'
+  | 'ADMIN_KEY_INVALID'
+  | 'NO_ELIGIBLE_MILESTONE';
 
 /**
  * Every stable error code a client can receive. The ErrorCode enum in

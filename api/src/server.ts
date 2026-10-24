@@ -17,7 +17,12 @@ async function main(): Promise<void> {
   await bootstrapDatabase(db);
   logger.info('database schema and seed data are current');
 
-  const app = createApp({ db, logger });
+  const app = createApp({
+    db,
+    logger,
+    adminKey: config.adminKey,
+    coupons: config.coupons,
+  });
   const server = app.listen(config.port, () => {
     logger.info({ port: config.port }, 'api listening');
   });
