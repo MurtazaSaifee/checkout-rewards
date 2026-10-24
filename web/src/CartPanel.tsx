@@ -5,7 +5,7 @@ import { formatCents } from './money';
 import type { CartController } from './useCart';
 
 export function CartPanel({ cart }: { cart: CartController }) {
-  const { state, editError } = cart;
+  const { state, editError, checkoutError } = cart;
 
   return (
     <section aria-labelledby="cart-heading">
@@ -13,9 +13,18 @@ export function CartPanel({ cart }: { cart: CartController }) {
         <h2 id="cart-heading">Cart</h2>
         <div>
           {state.kind === 'ready' ? (
-            <button type="button" onClick={cart.refresh}>
-              Refresh cart
-            </button>
+            <>
+              <button type="button" onClick={cart.refresh}>
+                Refresh cart
+              </button>{' '}
+              <button
+                type="button"
+                disabled={state.cart.status !== 'open' || state.cart.lines.length === 0}
+                onClick={cart.checkOut}
+              >
+                Check out
+              </button>
+            </>
           ) : null}{' '}
           <button type="button" onClick={cart.createNewCart}>
             {state.kind === 'none' ? 'Create cart' : 'New cart'}
@@ -38,6 +47,7 @@ export function CartPanel({ cart }: { cart: CartController }) {
             <p>This cart has been checked out and can no longer be changed.</p>
           ) : null}
           {editError !== undefined ? <ErrorDetails error={editError} /> : null}
+          {checkoutError !== undefined ? <ErrorDetails error={checkoutError} /> : null}
           {state.cart.lines.length === 0 ? (
             <p>The cart is empty.</p>
           ) : (

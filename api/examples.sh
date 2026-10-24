@@ -108,3 +108,60 @@ check 200 "Remove the mugs from alice's cart" \
   -X DELETE "${ALICE[@]}" "$BASE_URL/carts/$CART_ID/lines/ceramic-mug"
 check 200 "Removing a line that is already gone succeeds" \
   -X DELETE "${ALICE[@]}" "$BASE_URL/carts/$CART_ID/lines/ceramic-mug"
+
+# Checkout. Every checkout below takes stock and assigns order numbers, so run
+# this section against a freshly started stack; the scarce-product part expects
+# the seeded three hoodies to be unsold.
+CAROL=(-H 'X-Customer-Id: example-carol')
+DAN=(-H 'X-Customer-Id: example-dan')
+
+# Carol's cart: two canvas totes and a notebook set, each at its current price.
+check 201 "Create a cart for carol" -X POST "${CAROL[@]}" "$BASE_URL/carts"
+TOTE_CART="$(printf '%s' "$LAST_BODY" | jq -r '.id')"
+check 200 "Carol sets two canvas totes" \
+  -X PUT "${CAROL[@]}" "${JSON_TYPE[@]}" --data '{"quantity":2}' "$BASE_URL/carts/$TOTE_CART/lines/canvas-tote"
+check 200 "Carol adds a notebook set" \
+  -X PUT "${CAROL[@]}" "${JSON_TYPE[@]}" --data '{"quantity":1}' "$BASE_URL/carts/$TOTE_CART/lines/notebook-set"
+
+# Checkout places the order in one transaction and returns it: the order number,
+# each line with the product name and unit price as they are at checkout, and the
+# subtotal and total.
+check 201 "Carol checks out her cart" -X POST "${CAROL[@]}" "$BASE_URL/carts/$TOTE_CART/checkout"
+ORDER_ID="$(printf '%s' "$LAST_BODY" | jq -r '.id')"
+
+# The cart is now checked out, so it cannot be changed or checked out again.
+check 409 "Checking out the same cart again is refused" -X POST "${CAROL[@]}" "$BASE_URL/carts/$TOTE_CART/checkout"
+check 409 "Changing a checked-out cart is refused" \
+  -X PUT "${CAROL[@]}" "${JSON_TYPE[@]}" --data '{"quantity":3}' "$BASE_URL/carts/$TOTE_CART/lines/canvas-tote"
+
+# An empty cart has nothing to order.
+check 201 "Create an empty cart for carol" -X POST "${CAROL[@]}" "$BASE_URL/carts"
+EMPTY_CART="$(printf '%s' "$LAST_BODY" | jq -r '.id')"
+check 422 "Checking out an empty cart is refused" -X POST "${CAROL[@]}" "$BASE_URL/carts/$EMPTY_CART/checkout"
+
+# The order is a snapshot of the checkout, and the stock taken for it is gone from the catalogue.
+check 200 "Carol views her order" -X GET "${CAROL[@]}" "$BASE_URL/orders/$ORDER_ID"
+check 200 "Carol lists her orders, oldest first" -X GET "${CAROL[@]}" "$BASE_URL/orders"
+check 200 "Read the catalogue after the order" -X GET "$BASE_URL/products"
+printf '%s' "$LAST_BODY" | jq '.products[] | select(.id == "canvas-tote") | {id, stock}'
+
+# Another customer cannot see carol's order: it is answered as not found, exactly as a missing order is.
+check 404 "Dan cannot see carol's order" -X GET "${DAN[@]}" "$BASE_URL/orders/$ORDER_ID"
+
+# Conditional stock updates. Dan and Carol both set all three hoodies: stock is
+# only checked when a line is set, so both lines are accepted. Carol checks out
+# first and takes the stock, so Dan's checkout is refused and the body names the
+# short line with the quantity he asked for and the stock left (zero).
+check 201 "Create a cart for carol with the scarce hoodies" -X POST "${CAROL[@]}" "$BASE_URL/carts"
+HOODIE_CAROL="$(printf '%s' "$LAST_BODY" | jq -r '.id')"
+check 200 "Carol sets all three hoodies" \
+  -X PUT "${CAROL[@]}" "${JSON_TYPE[@]}" --data '{"quantity":3}' "$BASE_URL/carts/$HOODIE_CAROL/lines/limited-hoodie"
+check 201 "Dan creates a cart" -X POST "${DAN[@]}" "$BASE_URL/carts"
+HOODIE_DAN="$(printf '%s' "$LAST_BODY" | jq -r '.id')"
+check 200 "Dan also sets three hoodies: the line is accepted while stock remains" \
+  -X PUT "${DAN[@]}" "${JSON_TYPE[@]}" --data '{"quantity":3}' "$BASE_URL/carts/$HOODIE_DAN/lines/limited-hoodie"
+check 201 "Carol checks out first and takes the three hoodies" \
+  -X POST "${CAROL[@]}" "$BASE_URL/carts/$HOODIE_CAROL/checkout"
+check 409 "Dan's checkout is refused, and every short line is listed" \
+  -X POST "${DAN[@]}" "$BASE_URL/carts/$HOODIE_DAN/checkout"
+check 200 "Dan's cart is still open after the refusal" -X GET "${DAN[@]}" "$BASE_URL/carts/$HOODIE_DAN"

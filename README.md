@@ -2,7 +2,7 @@
 
 A backend for an ecommerce store where customers keep carts and check out, and every nth placed order earns the customer who placed it a single-use discount coupon. The service is a TypeScript API on Postgres, with a small React app for trying it by hand.
 
-The API currently serves the product listing and customers' carts. The rest of the contract is added to `api/openapi.yaml` as each operation lands, and that file is the authoritative description of every endpoint, status code and error code.
+The API currently serves the product listing, customers' carts, and checkout with order viewing. The rest of the contract is added to `api/openapi.yaml` as each operation lands, and that file is the authoritative description of every endpoint, status code and error code.
 
 ## Quick start
 
@@ -87,13 +87,21 @@ The defaults are public development credentials. Compose and CI set their own va
   ./api/examples.sh
   ```
 
-  Set `BASE_URL` to target another stack (default `http://localhost:8080/api`).
+  Set `BASE_URL` to target another stack (default `http://localhost:8080/api`). The checkout section takes stock and places orders, so run the script once against a freshly started stack.
 
 ## Carts and customer identity
 
 Cart operations name the customer in the `X-Customer-Id` header, a value of 1 to 128 letters, digits, `.`, `_`, `:` or `-`. A request without the header, or with a blank one, is refused with `CUSTOMER_ID_REQUIRED`. The identifier is claimed, not verified: any caller can send any identifier. It keeps one customer's carts out of another's view in normal use, and it is not a security control.
 
 A cart line is set to a quantity, not added to. `PUT /api/carts/{cartId}/lines/{productId}` with `{"quantity": 2}` creates or replaces the line, so sending the same request again changes nothing. Quantities run from 1 to 99, and `DELETE` on the same path removes the line. Carts store no prices: every read shows the product's current unit price. Setting a line checks the requested quantity against stock but does not reduce stock.
+
+## Checkout and orders
+
+`POST /api/carts/{cartId}/checkout` places the cart's order and returns it with status 201. Checkout runs in one database transaction that either places the whole order or changes nothing: it locks the cart, prices the lines at current prices, takes stock with one conditional update per line, takes the next order number, and records the order and its lines.
+
+If any line is short, the response is `409 INSUFFICIENT_STOCK`, and its `shortLines` list every short line with the quantity requested and the quantity available. A failed checkout takes no order number, so numbers run 1, 2, 3 with no gaps. A cart is checked out once: a second attempt, or a change to the cart afterwards, is refused with `CART_ALREADY_CHECKED_OUT`.
+
+An order keeps the names, unit prices and totals it had when it was placed, so later price or name changes do not alter it. `GET /api/orders` lists the calling customer's orders, and `GET /api/orders/{orderId}` returns one. An order that belongs to another customer is reported as `ORDER_NOT_FOUND`, the same as an order that does not exist.
 
 ## Errors and request identifiers
 

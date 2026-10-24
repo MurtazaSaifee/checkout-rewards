@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
   type Cart,
+  checkOutCart,
   createCart,
   getCart,
+  type Order,
   removeCartLine,
   setCartLineQuantity,
 } from './api/client';
@@ -19,10 +21,18 @@ export interface CartController {
   state: CartState;
   /** The last edit that failed. The cart itself is unchanged, so it stays on screen. */
   editError: unknown;
+  /** The last checkout that was refused. Nothing was placed, so the cart stays open. */
+  checkoutError: unknown;
   createNewCart: () => void;
   refresh: () => void;
   setQuantity: (productId: string, quantity: number) => void;
   removeLine: (productId: string) => void;
+  checkOut: () => void;
+}
+
+export interface CartOptions {
+  /** Called with the order once a checkout has placed it. */
+  onOrderPlaced: (order: Order) => void;
 }
 
 /**
@@ -30,11 +40,13 @@ export interface CartController {
  * the customer is loaded once; after that every change comes back from the
  * server, so what is shown is what the server holds.
  */
-export function useCart(customer: CustomerId): CartController {
+export function useCart(customer: CustomerId, options: CartOptions): CartController {
+  const { onOrderPlaced } = options;
   const [state, setState] = useState<CartState>(() =>
     loadCartId(customer) === undefined ? { kind: 'none' } : { kind: 'loading' },
   );
   const [editError, setEditError] = useState<unknown>(undefined);
+  const [checkoutError, setCheckoutError] = useState<unknown>(undefined);
 
   useEffect(() => {
     const cartId = loadCartId(customer);
@@ -111,5 +123,29 @@ export function useCart(customer: CustomerId): CartController {
     [customer, edit],
   );
 
-  return { state, editError, createNewCart, refresh, setQuantity, removeLine };
+  const checkOut = useCallback(() => {
+    if (state.kind !== 'ready') return;
+    const cartId = state.cart.id;
+    setEditError(undefined);
+    setCheckoutError(undefined);
+    checkOutCart(customer, cartId).then(
+      (order) => {
+        onOrderPlaced(order);
+        // The cart is checked out now. Read it back, so the panel shows the server's state.
+        getCart(customer, cartId).then(
+          (cart) => {
+            setState({ kind: 'ready', cart });
+          },
+          (error: unknown) => {
+            setState({ kind: 'failed', error });
+          },
+        );
+      },
+      (error: unknown) => {
+        setCheckoutError(error);
+      },
+    );
+  }, [customer, onOrderPlaced, state]);
+
+  return { state, editError, checkoutError, createNewCart, refresh, setQuantity, removeLine, checkOut };
 }

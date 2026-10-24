@@ -27,6 +27,14 @@ tags:
       A cart belongs to the customer who created it. Every operation with this
       tag needs the customer identifier header, and another customer's cart is
       answered as not found.
+  - name: checkout
+    description: >-
+      Turns the calling customer's cart into an order at current prices. The
+      whole checkout either places the order in full or changes nothing.
+  - name: orders
+    description: >-
+      A customer sees only their own orders. Another customer's order is
+      answered as not found.
   - name: admin
     description: >-
       Store administration. Operations with this tag are restricted to the
@@ -179,6 +187,90 @@ paths:
           $ref: '#/components/responses/Conflict'
         '500':
           $ref: '#/components/responses/InternalError'
+  /carts/{cartId}/checkout:
+    post:
+      tags:
+        - checkout
+      operationId: checkOutCart
+      summary: Check out the cart, placing an order at current prices.
+      description: >-
+        Places the order in full or changes nothing. The cart is locked, its
+        lines are priced at current prices, stock is taken for every line, and
+        the next order number is assigned. A cart yields at most one order, and
+        a checked-out cart can no longer be changed.
+      parameters:
+        - $ref: '#/components/parameters/RequestIdHeader'
+        - $ref: '#/components/parameters/CustomerIdHeader'
+        - $ref: '#/components/parameters/CartId'
+      responses:
+        '201':
+          description: The placed order.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Order'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /orders:
+    get:
+      tags:
+        - orders
+      operationId: listMyOrders
+      summary: List the calling customer's orders, in order-number order.
+      parameters:
+        - $ref: '#/components/parameters/RequestIdHeader'
+        - $ref: '#/components/parameters/CustomerIdHeader'
+      responses:
+        '200':
+          description: The customer's orders, oldest first.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /orders/{orderId}:
+    get:
+      tags:
+        - orders
+      operationId: getOrder
+      summary: View one of the calling customer's orders.
+      parameters:
+        - $ref: '#/components/parameters/RequestIdHeader'
+        - $ref: '#/components/parameters/CustomerIdHeader'
+        - $ref: '#/components/parameters/OrderId'
+      responses:
+        '200':
+          description: The order, with its lines as they were at checkout.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Order'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
 components:
   securitySchemes:
     adminKey:
@@ -224,6 +316,14 @@ components:
       description: Stable product identifier, as listed by GET /products.
       schema:
         type: string
+    OrderId:
+      name: orderId
+      in: path
+      required: true
+      description: Identifier of the order, as returned when it was placed.
+      schema:
+        type: string
+        format: uuid
   headers:
     RequestId:
       description: The request identifier for this exchange.
@@ -342,6 +442,84 @@ components:
           maximum: 99
           description: Whole number of units from 1 to 99. Replaces any quantity already in the cart.
           example: 2
+    OrderLine:
+      type: object
+      required:
+        - productId
+        - name
+        - unitPriceCents
+        - quantity
+        - lineAmountCents
+      additionalProperties: false
+      properties:
+        productId:
+          type: string
+          example: ceramic-mug
+        name:
+          type: string
+          description: Product name as it was at checkout, not as it is now.
+          example: Ceramic Mug
+        unitPriceCents:
+          type: integer
+          minimum: 0
+          description: Unit price in cents as it was at checkout.
+          example: 1200
+        quantity:
+          type: integer
+          minimum: 1
+          maximum: 99
+          example: 2
+        lineAmountCents:
+          type: integer
+          minimum: 0
+          description: Unit price in cents multiplied by quantity.
+          example: 2400
+    Order:
+      type: object
+      required:
+        - id
+        - orderNumber
+        - placedAt
+        - lines
+        - subtotalCents
+        - totalCents
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+          format: uuid
+        orderNumber:
+          type: integer
+          minimum: 1
+          description: Position in the sequence of all orders placed, starting at 1 with no gaps.
+          example: 1
+        placedAt:
+          type: string
+          format: date-time
+        lines:
+          type: array
+          items:
+            $ref: '#/components/schemas/OrderLine'
+        subtotalCents:
+          type: integer
+          minimum: 0
+          description: Sum of the line amounts in cents.
+          example: 3350
+        totalCents:
+          type: integer
+          minimum: 0
+          description: The amount charged, in cents.
+          example: 3350
+    OrderList:
+      type: object
+      required:
+        - orders
+      additionalProperties: false
+      properties:
+        orders:
+          type: array
+          items:
+            $ref: '#/components/schemas/Order'
     ErrorCode:
       type: string
       description: Stable machine-readable error identifier.
@@ -358,6 +536,8 @@ components:
         - CART_ALREADY_CHECKED_OUT
         - PRODUCT_NOT_FOUND
         - INSUFFICIENT_STOCK
+        - CART_EMPTY
+        - ORDER_NOT_FOUND
     Problem:
       type: object
       description: RFC 9457 Problem Details, extended with `code` and `requestId`.
@@ -405,6 +585,8 @@ components:
         A resource is missing or not visible to the caller. CART_NOT_FOUND
         covers a cart that does not exist and a cart that belongs to another
         customer alike. PRODUCT_NOT_FOUND names an unknown product.
+        ORDER_NOT_FOUND covers an order that does not exist and an order that
+        belongs to another customer alike.
       headers:
         X-Request-Id:
           $ref: '#/components/headers/RequestId'
@@ -418,6 +600,17 @@ components:
         after the client re-reads the resource. CART_ALREADY_CHECKED_OUT means
         the cart was checked out. INSUFFICIENT_STOCK lists each short line in
         shortLines, with the requested and available quantities.
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/RequestId'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    UnprocessableEntity:
+      description: >-
+        The request is well formed but violates a business rule. CART_EMPTY
+        means the cart has no lines, so there is nothing to order.
       headers:
         X-Request-Id:
           $ref: '#/components/headers/RequestId'

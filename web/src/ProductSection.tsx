@@ -9,7 +9,8 @@ type Load =
   | { kind: 'ready'; products: Product[] }
   | { kind: 'failed'; error: unknown };
 
-export function ProductSection({ cart }: { cart: CartController }) {
+/** stockVersion changes whenever an order may have changed stock, so the list is read again. */
+export function ProductSection({ cart, stockVersion }: { cart: CartController; stockVersion: number }) {
   const [load, setLoad] = useState<Load>({ kind: 'loading' });
   const [attempt, setAttempt] = useState(0);
 
@@ -26,7 +27,7 @@ export function ProductSection({ cart }: { cart: CartController }) {
     return () => {
       controller.abort();
     };
-  }, [attempt]);
+  }, [attempt, stockVersion]);
 
   const canAdd = cart.state.kind === 'ready';
 
