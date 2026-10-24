@@ -1,484 +1,66 @@
 # Decisions
 
-This document records the material decisions behind the service: the problem each one solves, the alternatives considered, what was chosen, why, and what it costs.
-
-## Decision: Postgres enforces the invariants
-
-**Context:** The service must never oversell stock, redeem a coupon twice, or create two orders from one checkout, even when requests overlap. A check written in application code is racy. Two requests can each read "three units in stock", each decide there is enough, and each proceed.
-
-**Options considered:**
-
-1. In-process locks (mutexes) around the business logic.
-2. An in-memory store behind a single-threaded queue.
-3. Embedded SQLite with transactions.
-4. Postgres, with each invariant expressed as a constraint or as a single statement that checks and changes state together.
-
-**Choice:** Postgres, with the invariants held by the database itself. Stock is a column with `CHECK (stock >= 0)`, so no code path can store a negative value. Identifiers and natural keys are primary keys or unique constraints. Where a decision depends on the current state, the check and the change happen in one statement, for example a conditional `UPDATE ... WHERE stock >= $n`. Where several steps must be serialised, the row is locked with `SELECT ... FOR UPDATE` inside a transaction.
-
-**Why:** In-process locks protect only the process that holds them. The moment a second instance runs, they stop protecting anything, and nothing signals that. Constraints enforced by the database hold however many API instances connect. They also guard against bugs and manual edits: a negative stock level is rejected even when the application code that should prevent it is wrong. An in-memory store or SQLite would need the same guarantees rebuilt by hand, and neither handles several writer processes well.
-
-Schema changes are serialised too. The migration runner applies all pending files in one transaction under a transaction-scoped advisory lock. Instances that start together queue on the lock, and the second one finds nothing left to apply. Seeding uses `INSERT ... ON CONFLICT (id) DO NOTHING`, so it is safe to run on every start and never overwrites a value someone has since changed.
-
-**Consequences:** The service needs a Postgres server, which Compose provides and the test setup expects. The rules are visible in the schema, where a reviewer can read them, but enforcement is split between SQL and TypeScript, so the statement that enforces a rule must be read to see it. Behaviour under concurrency depends on Postgres's isolation and locking semantics, which the design treats as part of its contract. Scaling out needs no change to these rules.
-
-## Decision: Contract-first OpenAPI
-
-**Context:** The API has many endpoints and a precise set of error codes. Clients need one authoritative description of it, and the implementation must be checked against that description rather than drift from it.
-
-**Options considered:**
-
-1. Generate the specification from code annotations.
-2. Describe the API in prose in the README.
-3. Write the OpenAPI document first, validate the implementation against it at runtime, and generate client types from it.
-
-**Choice:** Option 3. `api/openapi.yaml` is written before the handlers. `express-openapi-validator` validates every request and every response against it, and the web app generates its types from the same file with `openapi-typescript`.
-
-**Why:** The error model and the status codes are the most important part of this API. A single reviewable document makes them easy to check, where annotations would scatter them through handlers. Generated specifications describe what the code happens to do, which makes them a weak design tool. Prose drifts from the code. Validating responses at runtime means a handler cannot return a shape the contract does not declare. Generating frontend types from the same file means a contract change breaks the frontend build instead of failing at runtime.
-
-**Consequences:** Every change starts in the contract. The validator adds work to each request, which is acceptable at this scale. The validator loads and checks the document on the first request rather than at process start, so a broken document surfaces as a failure of that request. The integration tests exercise every operation, which makes a broken document fail the test run and the continuous integration build instead. The document is OpenAPI 3.0.3.
-
-## Decision: Plain SQL over an ORM
-
-**Context:** The invariants depend on specific statements: `SELECT ... FOR UPDATE`, conditional `UPDATE` statements, unique constraints. A reviewer needs to read those statements where the rule is enforced, and a generated statement hides the lock or the condition the design relies on.
-
-**Options considered:**
-
-1. An ORM such as Prisma or TypeORM.
-2. A query builder such as Kysely.
-3. Hand-written SQL through the `pg` driver, with plain migration files.
-
-**Choice:** Option 3. Queries are hand-written SQL run through `pg`. Migrations are numbered `.sql` files that a small runner applies at startup.
-
-**Why:** An ORM generates the statements, and the generated statements are exactly what the design must control. Row locks and conditional updates are awkward in ORMs and usually end up as raw-query escape hatches, which turns the escape hatch into the main path. A query builder still places an abstraction between the reader and the statement. Plain SQL keeps each enforcing statement readable where it lives, and the migration files are exactly what Postgres runs.
-
-**Consequences:** There is more SQL to write and review, and no generated row types, so the shape of each query result is declared by hand next to the query. The schema changes only through migration files, which are the single source of truth for it. The tests check behaviour through the API rather than the mapping layer, so a mistake in a hand-written mapping shows up as a failing response.
-
-## Decision: Problem Details error model
-
-**Context:** Clients must handle errors programmatically. Errors come from many layers (contract validation, JSON parsing, routing, business rules, and unexpected failures), and internal detail such as stack traces must never reach a client.
-
-**Options considered:**
-
-1. A bespoke envelope such as `{ "error": { "message": "..." } }`.
-2. RFC 9457 Problem Details with extra fields added as needed.
-3. RFC 9457 Problem Details, with a stable application-level `code` and the request identifier as standard members.
-
-**Choice:** Option 3. Every error is an RFC 9457 document served as `application/problem+json`. It has `type`, `title`, `status` and `detail`, plus a stable `code` and the `requestId`. Code-specific fields are extension members. For example, a validation error lists the offending `errors` by path. Domain failures are typed errors that carry their own status, code and title, and they are mapped in one place. Anything unexpected becomes `INTERNAL_ERROR` with a generic detail. The underlying error is logged under the request identifier and never sent to the client.
-
-**Why:** RFC 9457 is a standard shape that clients and tooling already understand. Clients branch on `code`, because `title` and `detail` are written for people and may change. The `type` member is required by the standard and is stable per code. The request identifier appears in the header and in the body, so a client can quote it and an operator can find the matching log lines. A single mapping point means no route can return an error in a different shape.
-
-**Consequences:** Each error code is a commitment to clients, so codes are listed in the contract's `ErrorCode` enum and never renamed. The `type` URI is an identifier rather than a link to a page; its host is a placeholder. A new domain error needs a code, a status and a contract entry. The `ErrorCode` union in TypeScript stops a handler from using a code the contract does not declare.
-
-## Decision: One rule for status codes
-
-**Context:** A client should decide from the status alone whether to correct the request, re-read the resource and try again, or stop. Ad hoc choices between 400, 409 and 422 make that unpredictable, and so does mixing "not found" with "not yours".
-
-**Options considered:**
-
-1. Use 400 for every failed request, whatever the cause.
-2. Use 409 for every rejected state change.
-3. Assign each status a single meaning, and apply it everywhere.
-
-**Choice:** Option 3, with these meanings:
-
-- **400** the request is malformed: bad JSON, a value of the wrong type, an unknown parameter, or a missing required header. The contract validator rejects these before any business logic runs.
-- **401** the admin key header is missing or wrong.
-- **402** the payment was declined.
-- **404** the resource does not exist, or it exists but is not visible to this caller. Ownership is never revealed, so another customer's cart and the absence of a cart look the same. An unknown route also answers 404.
-- **409** the request conflicts with the current state of a resource. The client should re-read that resource before deciding what to do.
-- **422** the request is well formed and breaks a business rule that the current state does not change, such as checking out an empty cart or reusing an idempotency key for a different request.
-- **500** an unexpected failure, reported without internal detail.
-
-**Why:** The rule turns the status into a retry policy. A 400 or 422 means the same request will fail again and must change first. A 409 means re-reading state and trying again is reasonable. A 402 means the customer has to change the payment. A 404 keeps one customer's data from being detectable by another.
-
-**Consequences:** Clients can write one handler per status class. Today the service uses 400, 401, 404, 409 and 500; the other codes apply as the operations that need them land. Every new error must be assigned one of these meanings, and the contract's description states the rule so a reviewer can check it. The boundary between 409 and 422 takes judgement, and the rule is written down so that judgement is applied the same way each time.
-
-## Decision: Customer identity is claimed, not verified
-
-**Context:** Each cart belongs to one customer, and the API must know which customer a request is for. The service has no sign-in, so there is no verified identity to rely on.
-
-**Options considered:**
-
-1. Verify the customer with a token or session issued at sign-in.
-2. Accept a customer identifier in the `X-Customer-Id` header and trust it.
-3. Take the customer from the request path or body.
-
-**Choice:** Option 2. Every cart operation requires the `X-Customer-Id` header. A request without it, or with a blank value, is refused with `CUSTOMER_ID_REQUIRED` before any other check runs. A cart is found only when its owner matches the header, and a cart owned by someone else is reported as not found.
-
-The header is claimed, not verified: any caller can send any identifier. The rule keeps carts apart in ordinary use. It is not a security control.
-
-**Why:** A verified identity needs a sign-in mechanism that the service does not have yet. A header keeps customer data out of paths and bodies, and one middleware applies the rule to every cart route. The check runs before the contract validator, so a missing header gets its own code rather than a generic validation failure.
-
-**Consequences:** Anyone who knows a customer's identifier can read and change that customer's cart. The service must not rely on this header to protect money or personal data. When sign-in arrives, the header is replaced by a verified identity at the same point in the request pipeline, and the owner filter in the queries stays as it is.
-
-## Decision: Carts store no prices
-
-**Context:** A cart shows what a customer would pay. Prices change, and a cart can stay open for days, so a copied price can go out of date without anyone noticing.
-
-**Options considered:**
-
-1. Copy each product's unit price into the cart line when the line is set.
-2. Read each line's unit price from the product every time the cart is read.
-
-**Choice:** Option 2. A cart line stores only the product and the quantity. The unit price, line amount and subtotal are calculated from the current product price on every read and every change, by one pure module with no database access. Money is held as whole cents.
-
-**Why:** A stored price is a second copy of a fact that already lives in the products table, and the two copies drift apart. Reading the live price means a cart never shows a stale figure, and a price change needs no repair of existing carts. One arithmetic module means every total is computed the same way, and whole cents keep the arithmetic exact.
-
-**Consequences:** A cart's total can differ between two reads when a price changes between them. The figures shown in a cart are current estimates, not a promise of what a later purchase will cost. Every caller that needs a total uses the same module, so they agree with each other.
-
-## Decision: Lines are set to a quantity, not incremented
-
-**Context:** A client may send the same request twice when a connection drops, or two browser tabs may change the same line. If each request added its quantity to the line, a retry would count twice.
-
-**Options considered:**
-
-1. Add the quantity in each request to the line.
-2. Set the line to the quantity in the request, replacing whatever was there.
-
-**Choice:** Option 2. Setting a line creates it if needed and replaces its quantity, so sending the same request again leaves the cart unchanged. Removing a line deletes it, and removing a line that is already gone also succeeds. Quantities are whole numbers from 1 to 99. Zero is not a quantity: a client removes a line with the delete operation.
-
-**Why:** A replacement has the same effect however many times it arrives, so retries are safe. Concurrent identical requests leave one line, not several. The quantity a customer sees is the quantity the cart holds, which an increment cannot guarantee when two tabs are open. Refusing zero leaves one way to remove a line.
-
-**Consequences:** To add one more unit, a client must read the current quantity and send the new total. Two clients editing the same line race, and the last request wins. The limit of 99 is a business rule. Changing it means changing the contract, the schema check and the tests together.
-
-## Decision: Stock is checked when a line is set and taken at checkout
-
-**Context:** A customer who asks for more of a product than is in stock should learn that when they set the line, not at the end. Reserving stock for every open cart would let abandoned carts block other customers, and nothing signals when a cart has been abandoned.
-
-**Options considered:**
-
-1. Reserve stock when a line is set, and release it when the cart is abandoned.
-2. Check stock when a line is set without changing it, and take stock only at checkout.
-3. Do not check stock until checkout.
-
-**Choice:** Option 2. Setting a line compares the requested quantity with the product's current stock. If the quantity is higher, the request is refused with `INSUFFICIENT_STOCK` (409), and the body lists each short line with the quantity requested and the quantity available. The check changes nothing. Only checkout takes stock.
-
-**Why:** A reservation needs an expiry rule, and an abandoned cart gives no signal that it has been abandoned. Reserving on set would turn idle carts into lost sales for everyone else. The check still gives the customer early feedback at no cost to anyone. The guarantee that stock never goes negative does not rest on this check. It rests on the database constraint and on a conditional update at checkout.
-
-**Consequences:** A line that passes the check can still fail at checkout when another customer has bought the stock first. The check answers whether there is enough now, not whether there will be enough when the customer pays. Checkout must make its own conditional decrement and report a shortage when it finds one.
-
-## Decision: Cart changes are serialised on the cart row
-
-**Context:** A change to a cart reads the cart's status, checks the product and writes a line. If two changes to the same cart run together, one can check the cart before the other has written, and a line can be added to a cart that has just been checked out.
-
-**Options considered:**
-
-1. Lock the cart row with `SELECT ... FOR UPDATE` inside a transaction for each change.
-2. Give each cart a version number, and have clients retry when it has moved on.
-3. Run every transaction at the serialisable isolation level, and retry the ones Postgres aborts.
-
-**Choice:** Option 1. Each change to a cart runs in one transaction that first locks the cart row, and checkout takes the same lock. A change to a cart that is already checked out is refused with `CART_ALREADY_CHECKED_OUT` (409), and removing a line from such a cart is refused the same way.
-
-**Why:** A row lock is simple to read, and it is held only for the short duration of one change. A version number would make clients retry on every collision. Serialisable isolation makes Postgres abort some transactions, and each abort needs a retry. Locking the cart row serialises changes to one cart and leaves every other cart alone. The lock is held by the database, so it holds however many API instances connect.
-
-**Consequences:** Changes to the same cart wait for each other, so a slow change delays the rest. Changes to different carts never wait. Every operation that changes a cart must take the same lock, and a single helper takes it and checks that the cart is still open, so the cart changes and checkout share one definition of an editable cart.
-
-## Decision: Checkout is one transaction
-
-**Context:** A checkout changes several rows: the cart, the stock of each product, the order counter, and the new order with its lines. A failure part way through must not leave some of those changes in place and others out, such as stock taken for an order that was never recorded.
-
-**Options considered:**
-
-1. Run each step as its own statement, and undo the completed steps when a later one fails.
-2. Record the order as pending first, confirm it in a later step, and clear abandoned pending orders with a background job.
-3. Run every step inside one database transaction, which Postgres commits or rolls back as a unit.
-
-**Choice:** Option 3. Checkout locks the cart row with the same lock cart edits take, checks that the cart is open and not empty, prices the lines at current prices, takes the stock, takes the next order number, inserts the order and its lines, and marks the cart checked out. The transaction commits only when every step has succeeded.
-
-**Why:** Rollback is a guarantee the database already gives, so no step needs its own undo logic. Hand-written undo steps are where partial failures go wrong. A pending state needs a clean-up job and a rule for what customers see while an order is pending. Checks that refuse a cart are run before any stock is touched, so the common refusals change nothing.
-
-**Consequences:** The transaction holds row locks from its first statement until it commits, so nothing inside it may call another service, which would hold those locks for the length of the call. A cart edit that races a checkout either lands first and is part of the order, or waits and is refused with `CART_ALREADY_CHECKED_OUT`. No order can contain a line the cart did not hold when it was checked out.
-
-## Decision: Stock is taken with one conditional update per line
-
-**Context:** Many checkouts can want the same product at once. A checkout that reads the stock, decides there is enough and then writes the reduced level can be overtaken by another checkout that does the same between the read and the write. Both could then take the last units.
-
-**Options considered:**
-
-1. Read the stock level, check it in application code, then write the reduced level.
-2. Lock each product row with `SELECT ... FOR UPDATE`, then check and write under the lock.
-3. Decrement with one conditional statement per line, `UPDATE products SET stock = stock - $2 WHERE id = $1 AND stock >= $2`, and treat a statement that changes no row as a shortage.
-
-**Choice:** Option 3. Checkout issues one conditional update per line, in ascending product identifier order. A line whose update changes no row is short. Checkout does not stop at the first short line. It tries every line, collects each short line with the quantity requested and the quantity available, and then fails the whole checkout. The rollback returns the stock that the earlier lines took.
-
-**Why:** The check and the change are one statement, so no other transaction can act between them. Option 2 is also correct, but it holds the lock across more work and needs a separate read and write. Taking lines in one fixed order means two checkouts that want the same products queue in the same order, which avoids deadlocks. Reporting every short line lets the customer fix the whole cart in one visit instead of discovering the shortages one at a time.
-
-**Consequences:** A refused checkout reads the available quantity for each short line, which is cheap at this scale. The rule is only as strong as the statement that carries it, so the `WHERE stock >= $2` clause is where a reviewer must look. The `CHECK (stock >= 0)` constraint on the column is the backstop: if that clause were ever lost, the update would fail instead of overselling.
-
-## Decision: Payment is charged inside the checkout transaction, through a fake gateway
-
-**Context:** A checkout takes stock and an order number, and the customer must never be charged for an order that is not placed, nor leave stock taken for an order that was declined. The store has no real payment provider, but the tester needs to see a declined payment, and the design has to say what a real provider would require.
-
-**Options considered:**
-
-1. Treat every successful checkout as paid, with no payment step. Declines cannot be exercised, and the design has no place for a real charge.
-2. Charge outside the database transaction, in two phases: reserve the stock and a pending order, charge, then confirm the order or release the reservation. A slow provider call holds no row locks, but this needs pending order states, compensation when a charge fails, and recovery for a crash between the charge and the confirmation.
-3. Charge inside the checkout transaction, after the stock is taken and before the order number is taken, through an in-process gateway. A decline fails the transaction, and the rollback undoes the stock and the claimed key together.
-
-**Choice:** Option 3. The gateway is an interface with one charge operation, and its only implementation is an in-process fake. The fake approves the payment token `tok_ok` and declines `tok_decline`. The token is a checkout option that defaults to `tok_ok`, so it is part of the request fingerprint. A decline is a typed domain error, answered `402 PAYMENT_DECLINED`, and its outcome is logged with that code.
-
-**Why:** The fake moves no money, so a rollback leaves nothing outside the database to undo. One transaction then covers stock, the claimed key, the order number and the order, and no compensation logic is needed. Charging after the stock is taken means a line that is short never reaches the gateway. Charging before the order number is taken means a decline never consumes a number, so the numbers stay gapless with no clean-up. The counter row is locked only after the charge, so it is never held during the charge.
-
-**Consequences:** The transaction holds its row locks for the duration of the charge. That is harmless with the fake and wrong with a real provider: a slow call would hold the stock rows and the cart lock, and a charge that succeeds before a database failure would be lost while the money has moved. Adopting a real provider means moving to the two-phase design of option 2: reserve the stock and create a pending order in one transaction, charge outside any transaction with an idempotency key the provider honours, then confirm the order or release the reservation. Orders left pending after a crash then need a reconciliation job, which is not built here. Because the token is part of the fingerprint, a retry under the same key with another token is refused as a reused key once an order exists. A declined attempt stores nothing, so its key works again with an approving token.
-
-## Decision: Order numbers come from a counter row taken last
-
-**Context:** Customers and staff refer to orders by number, so the numbers should run 1, 2, 3 with no gaps. A checkout that fails must not consume a number. The number must be assigned inside the checkout transaction, so it always belongs to the order that is actually stored.
-
-**Options considered:**
-
-1. A Postgres sequence.
-2. The highest existing number plus one, read in the same statement that inserts the order.
-3. A single counter row, incremented inside the transaction as its last write before the order insert.
-
-**Choice:** Option 3. The counter is one row holding the last number issued. Checkout increments it with `UPDATE ... RETURNING` as the last write before the order insert, so the row stays locked until the checkout commits or rolls back.
-
-**Why:** A sequence never rolls back, so a checkout that fails after drawing a number leaves a gap. Option 2 is racy, because two checkouts can read the same highest number. A counter row incremented inside the transaction rolls back with it, so a failed checkout gives its number back. Taking the number last keeps the lock on the row as short as possible.
-
-**Consequences:** Every checkout that reaches the counter waits for the checkouts ahead of it to commit. That queue is deliberate, and it is why the counter is updated as late as possible. Because the lock lasts until commit, numbers become visible in the order they were issued: a customer never sees order 6 before order 5 exists. The numbers have no gaps while orders are never deleted, which the service does not do.
-
-## Decision: Orders store a snapshot of their lines
-
-**Context:** An order records what the customer agreed to pay. Products can be renamed or repriced later, and an order that read those values from the products table would change with them.
-
-**Options considered:**
-
-1. Store only the product identifier on each order line, and join to the products table to show the name and price.
-2. Copy the product name, unit price, quantity and line amount into each order line when the order is placed, and store the subtotal and total with the order.
-
-**Choice:** Option 2. Each order line keeps its product identifier together with the name, unit price, quantity and line amount, and the order keeps its subtotal and total. Reading an order returns these stored values and never recalculates them.
-
-**Why:** A join would show a past order with today's name and price, which is wrong for a record of a payment. Copying the figures costs a little storage and removes the dependency between an order and the catalogue. Storing the totals rather than recomputing them means the order keeps the figures the customer saw at checkout.
-
-**Consequences:** The same name and price appear in many rows, which is intended. A price or name change affects carts from then on and leaves placed orders as they were. The product identifier is kept so a line can still be traced to its product, but it is not used to produce any figure shown on an order.
-
-## Decision: Coupons belong to the customer who placed the milestone order
-
-**Context:** Every nth order earns a coupon, and the coupon must reach the customer whose order earned it. The service has no sign-in, so a customer cannot prove who they are when they ask for a coupon.
-
-**Options considered:**
-
-1. The customer asks for a coupon, and the service issues one if a milestone is open.
-2. The administrator names the customer who receives the coupon.
-3. The coupon goes to the customer who placed the order that reached the milestone, read from that order.
-
-**Choice:** Option 3. Generation reads the customer from the milestone order, so the generate request carries no body. Each customer sees their own coupons through `GET /api/coupons`.
-
-**Why:** A request for coupons would let any caller ask for them, and callers would race for the open one. An administrator naming recipients would make a reward depend on a choice rather than on a purchase. The order already records who placed it, so the reward follows data that exists and cannot be redirected by the request.
-
-**Consequences:** A customer with no order at a milestone never receives that coupon. Ownership is only as reliable as the customer identifier, which is claimed rather than verified, so the decision on customer identity applies here too. Coupons do not expire.
-
-## Decision: Milestones are counted under the order counter's lock
-
-**Context:** Two generate requests can run at the same time. Each must see the same count of orders and of issued coupons, and only one may issue the coupon for a given milestone. Otherwise both issue one, and the milestone is rewarded twice.
-
-**Options considered:**
-
-1. Read the order count and the issued count in one statement, then insert. No lock.
-2. Lock the order counter row with `SELECT ... FOR UPDATE` in its own transaction, then count, then insert.
-3. Rely on a unique constraint on the milestone, and let the losing insert fail.
-
-**Choice:** Option 2, with a unique constraint on the milestone column as a second safeguard. Generation takes the counter row before it reads anything, so generation requests run one at a time, and each sees the coupons the previous one committed.
-
-**Why:** Without a lock, both requests read the same count and both try to insert the same milestone. The constraint stops the duplicate, but the losing request then fails with a database error, which a client sees as a server failure. The lock makes the losing request read the new count and return a clear refusal. The constraint stays, because a rule enforced only in application code can be broken by a later change.
-
-**Consequences:** Generation waits for any checkout that is taking an order number, since checkout holds the same row until it commits. The generation transaction is short, so the wait is brief. If the constraint refuses an insert, the call is answered as `NO_ELIGIBLE_MILESTONE`, because that refusal means another call rewarded the milestone first. Normal operation does not reach that path.
-
-## Decision: Each generate call issues one coupon, for the oldest open milestone
-
-**Context:** Several milestones can be reached without a coupon, for example when no one has generated coupons for a while. A generate call could issue all of them, or one at a time. Either way, the response must say whether more are waiting.
-
-**Options considered:**
-
-1. Issue every outstanding coupon in one call.
-2. Issue one coupon per call, for the oldest milestone without one, and report how many reached milestones are still waiting.
-3. Let the caller name the milestone to issue.
-
-**Choice:** Option 2. The response carries the new coupon, the customer it went to, and `unrewardedMilestonesRemaining`. When no reached milestone is waiting, the call is refused with `NO_ELIGIBLE_MILESTONE`.
-
-**Why:** One coupon per call keeps each call small, and the remaining count tells the caller whether to call again. Naming a milestone would let a caller skip one or repeat one. Oldest first means every milestone is rewarded in the order it was earned. The refusal is a 409 under the rule for status codes: the request is valid, the answer changes once the state does, and the client should re-read before it tries again.
-
-**Consequences:** Clearing a backlog takes one call per milestone. Nothing issues coupons on a timer, so coupons appear only when an administrator asks for them.
-
-## Decision: The admin key is a placeholder, not authentication
-
-**Context:** Issuing coupons and listing every coupon are administrative actions, and they need a gate. The service has no accounts, sign-in or roles, and adding them is a larger change than this service needs yet.
-
-**Options considered:**
-
-1. Accounts with sign-in and roles.
-2. A shared secret from configuration, sent in a header with each administrative request.
-3. No gate: administrative routes open to any caller.
-
-**Choice:** Option 2. The secret comes from `ADMIN_KEY` at startup, and each administrative request sends it in `X-Admin-Key`. The service compares the two values as SHA-256 digests with `crypto.timingSafeEqual`, so the time taken does not reveal how much of the key matched. The web app asks for the key and keeps it in component memory until the page is reloaded. It never writes the key to browser storage.
-
-**Why:** Option 3 would leave coupons to anyone. Option 1 is more than this service needs yet. A shared secret keeps every administrative route behind one check. Hashing both sides gives equal lengths, which `timingSafeEqual` requires, and it keeps the key's length out of the comparison. Keeping the key out of browser storage limits where it can leak.
-
-**Consequences:** Anyone who holds the key can issue coupons. The key travels with every administrative request, so it should be used only over a trusted connection. The default, `local-admin-key`, is public and suits local development only. The key identifies no one, so the service cannot tell one administrator from another.
-
-## Decision: Coupon rules are read at startup
-
-**Context:** Coupons depend on two settings: the interval between milestones (n) and the percentage each coupon gives. Changing either while coupons exist could leave the arithmetic disagreeing with what has already been issued.
-
-**Options considered:**
-
-1. Store the rules in the database, so an administrator can change them while the service runs.
-2. Read them from the environment at startup, as the other settings are.
-
-**Choice:** Option 2, with `COUPON_EVERY_N_ORDERS` (default 5) and `COUPON_PERCENT_OFF` (default 10). Both are validated before the service accepts traffic.
-
-**Why:** A milestone is every nth order. If n changed after orders were placed, the milestones already passed would move, and the coupons issued for them would no longer match the orders that earned them. Settings in the environment are read once and visible in the deployment, like the rest of the configuration.
-
-**Consequences:** The interval is not meant to change once orders exist, because coupons already issued were earned under the old one. The percentage is copied into each coupon when it is issued, so a changed percentage applies only to coupons issued after the restart.
-
-## Decision: Coupon codes are random and avoid look-alike characters
-
-**Context:** Customers will type coupon codes, so a code must be hard to guess and easy to read out or copy by hand. Sequential codes reveal how many coupons exist and can be enumerated. Long codes are hard to read out.
-
-**Options considered:**
-
-1. Sequential numbers.
-2. UUIDs.
-3. Short random codes from an alphabet without look-alike characters.
-
-**Choice:** Option 3. A code is ten characters, drawn with `crypto.randomInt` from a 31-character alphabet that omits `0`, `1`, `I`, `L` and `O`. The code is the primary key of the coupons table, so one code cannot be stored twice.
-
-**Why:** Random codes cannot be enumerated and reveal nothing about volume. Leaving out look-alike characters means a code copied by hand is less likely to be mistyped. Ten characters from 31 gives about 8 × 10^14 codes, far more than the milestones will ever produce. `crypto.randomInt` draws without modulo bias, unlike a plain modulo of random bytes.
-
-**Consequences:** A code works for whoever presents it, so it is a bearer value. Redemption checks the owner as well as the code, so a customer who learns another customer's code still cannot spend it.
-
-## Decision: Money is whole cents, and a discount rounds down once on the subtotal
-
-**Context:** Prices, totals and discounts are money, and a percentage of a price is often a fraction of a cent: 10% of 1,995 cents is 199.5. A binary floating-point amount can drift from the exact figure, so a total built from floats can differ by a cent from the one the customer was shown. A discount can also be worked out per line or on the subtotal, and the two round differently.
-
-**Options considered:**
-
-1. Floating-point amounts in dollars, rounded for display.
-2. A decimal library for amounts.
-3. Integer cents, with the discount computed in integers as `floor(subtotal × percentage / 100)` and taken once on the subtotal.
-4. Integer cents, with the discount computed and rounded on each line.
-
-**Choice:** Option 3. The discount is worked out from the subtotal, not from each line, and the total is the subtotal less the discount. Percentages are whole numbers from 0 to 100, so the total is never negative. Two lines of 995 cents at 10% give a subtotal of 1,990 and a discount of 199. Per-line rounding would give 198.
-
-**Why:** Integer cents hold every amount exactly, so the stored total is the total shown. Rounding down means the discount never exceeds the exact percentage, so the store does not give away a fraction of a cent it was not asked to give. Rounding once on the subtotal gives one figure per order, which the customer can check against the cart. Rounding per line would make the discount depend on how the same items are split across lines.
-
-**Consequences:** The discount can be up to one cent below the exact percentage, and that is the rule, not an error. The web app works out the same discount so that it can send the total the customer saw, so the rule lives in two places, and a change to one must be made to the other. The database checks that every order's total equals its subtotal less its discount.
-
-## Decision: A checkout takes at most one coupon
-
-**Context:** A customer may hold several coupons, and applying several to one order would be a natural extension. Each coupon changes the amount, so several would need an order of application and a rule for how they combine.
-
-**Options considered:**
-
-1. Several coupons per checkout, each taking its percentage of the subtotal.
-2. Several coupons per checkout, applied one after another, each taking its percentage of what the previous one left.
-3. At most one coupon per checkout.
-
-**Choice:** Option 3. The checkout body takes one `couponCode`, and the order records one code and one percentage.
-
-**Why:** With one coupon the amount is one calculation: the subtotal, less its percentage, rounded down once. Two coupons on one subtotal would need a rule for how their percentages combine, and stacking them would make the total depend on the order of application. Neither is needed to reward a purchase, and the record stays simple: one code, one percentage and one discount.
-
-**Consequences:** A customer with two coupons uses one per order, and the other waits for a later order. Supporting several coupons later would need a change to the order record, which holds one code and one percentage, and a decision on how they combine.
-
-## Decision: A coupon is locked while it is redeemed, and a constraint backs the lock up
-
-**Context:** A coupon is single-use. Two checkouts from one customer that name the same coupon at the same moment must not both redeem it. A check followed by a write is racy: each checkout can read the coupon as unredeemed before either one writes.
-
-**Options considered:**
-
-1. Check the coupon's redeemed field, then write it. Both checkouts can pass the check.
-2. Lock the coupon's row with `SELECT ... FOR UPDATE` in the checkout transaction, so that a second checkout waits for the first and then reads the redemption.
-3. Enforce one redemption with a unique constraint alone, and let the losing checkout fail with a constraint error.
-4. Both 2 and 3: the lock gives a clean refusal, and a unique constraint makes a second order for the same coupon impossible even if the lock were removed.
-
-**Choice:** Option 4. The checkout locks the coupon's row, checks its owner and whether it is redeemed, and refuses with the matching code. A unique constraint on the coupon code of the orders table stops a second order for the same coupon, and the checkout turns a violation of that constraint into `COUPON_ALREADY_REDEEMED`.
-
-**Why:** The lock makes the refusal clean. Under the database's default isolation, a checkout that waits on the lock reads the row again after the first checkout commits, so it sees the redemption and refuses with the coupon's own error, before it takes stock or reaches the insert. The constraint is needed as well. A unique constraint on the coupon's redeemed-by field stops two coupons from naming one order, but it does nothing to stop two orders from naming one coupon. The constraint that holds the rule is therefore on the order's coupon code.
-
-**Consequences:** A second checkout for the same coupon waits while the first runs, so a slow checkout delays the others that name the same coupon. The lock ends when the checkout commits or rolls back. The constraint is the last line of defence: if the lock were ever removed, the rule would still hold, though the losing checkout would then fail with a database error that the service has to translate.
-
-## Decision: A coupon is redeemed only by a placed order
-
-**Context:** A checkout can fail after it has named a coupon: a short line, a changed price, or a declined payment. If the coupon were marked as spent when the checkout began, a failed checkout would spend it, and the customer would lose the reward for a purchase that never happened.
-
-**Options considered:**
-
-1. Mark the coupon when the checkout begins, and clear the mark if the checkout fails.
-2. Mark the coupon in its own committed transaction before the charge.
-3. Mark the coupon inside the checkout transaction, together with the order, after the charge is approved.
-
-**Choice:** Option 3. The coupon is checked and locked when the discount is applied, but nothing is recorded there. The redemption is written in the step that records the order, which runs only after the charge is approved.
-
-**Why:** The checkout is one transaction, so a mark written inside it commits with the order or disappears with the rollback. A declined payment throws before the order is written, so nothing is marked, and the customer can try again with the same coupon and another payment outcome. Option 1 depends on a second write succeeding on the failure path, and that write may be the one that cannot succeed. Option 2 can leave a coupon spent when a crash falls between the two commits, with no order to show for it.
-
-**Consequences:** A checkout that fails leaves its coupon unredeemed, and the same cart can use the coupon again. This relies on the payment gateway being in-process, so that a rollback also undoes the charge. A real provider's charge cannot be rolled back, so with one, a failure after the charge would have to reverse it. The decision on charging inside the checkout transaction describes that case.
-
-## Decision: Checkout retries are safe through an idempotency key
-
-**Context:** A client that sends a checkout and then loses the response, through a timeout, a dropped connection or a crash, cannot tell whether the order was placed. A retry that is not protected can place a second order and take the stock again. If the first attempt did succeed, the retry reaches a cart that reads as checked out, so the client gets a 409 with no order to show the customer. Neither outcome can be left to chance.
-
-**Options considered:**
-
-1. Rely on the one-checkout-per-cart rule alone. A retry after success is refused with `CART_ALREADY_CHECKED_OUT`, which is safe, but the refusal carries no order, so the client has to find the order it lost.
-2. Record the attempt in its own committed transaction before checkout starts, and update it when checkout finishes. A crash between the two leaves a pending record that needs a clean-up job, and a failed attempt needs its own reconciliation.
-3. Claim a client-supplied key as the first step of the checkout transaction, under a unique constraint on the customer and the key. A successful checkout stores its response under the key in the same transaction, and a later attempt with the same key receives that response.
-4. Look the key up before checkout and insert it at the end. Two concurrent attempts can both find no record and both proceed, which is the race the database constraints exist to prevent.
-
-**Choice:** Option 3. Every checkout request must carry an `Idempotency-Key` header, and keys are scoped to the customer. The first step of checkout is an insert of the key with `ON CONFLICT (customer_id, idempotency_key) DO NOTHING`. If the insert places a row, the attempt continues. If it does not, the committed record is read. A different request fingerprint is refused with `IDEMPOTENCY_KEY_REUSED` (422), and a matching one replays the stored status and body. The fingerprint is a SHA-256 digest of the canonical JSON of the cart identifier and the checkout options, with defaults applied. Only a successful checkout stores its response, and the stored text is the exact JSON sent, so a replay is byte for byte the same.
-
-**Why:** The claim has to come before the cart lock. If the cart were locked first, a retry of a placed checkout would meet a cart that is already checked out and be refused before it found its own key. The concurrency rests on Postgres, as it does elsewhere in the service. A second insert with the same key waits for the first transaction. If that transaction commits, the insert does nothing and the stored response is read. If it rolls back, the insert succeeds and the second attempt proceeds. This holds however many API instances connect, and needs no application lock.
-
-Storing only successes follows from the transaction. A failed checkout, whether for a short line, an empty cart or a missing cart, leaves the cart open, so the customer can fix it and retry with the same key. A stored 409 would replay a stale refusal for a cart that is now fine. Because the claim is part of the same transaction, the failure rolls it back and frees the key.
-
-The stored body is text, not a re-serialised order, so a replay matches the response the client first received even if the serialiser changes later. The fingerprint covers the cart, so a key reused for a different cart is treated as a client bug rather than replayed. It covers the options as well, so an option added later changes the request identity without any change to the key logic.
-
-**Consequences:** A retry that arrives while the first attempt is still running waits for it, so a slow first attempt also delays its retries. The wait ends when the first attempt commits or rolls back. Requests without the header are refused with `IDEMPOTENCY_KEY_REQUIRED` (400), which breaks any client that does not send one. Keys never expire, so the table gains one row per placed order. A retention window would be a later decision: a retry after the window would place a new order, so the window must outlast any retry a client makes. The key is not a secret that protects the order. The customer header is claimed too, so anyone who knows a customer's identifier can already read that customer's orders. A new key on a checked-out cart is still refused with `CART_ALREADY_CHECKED_OUT`, because the key protects retries of one attempt. The one-checkout-per-cart rule still holds through the cart lock and the unique cart identifier on orders.
-
-## Decision: A checkout refuses a total the customer did not see
-
-**Context:** Prices change while a cart is open, and carts store no prices, so the cart shows the price in force at each read. A customer who reviews a total and then checks out can be charged a different amount if the price changes in between, and nothing tells them. The customer needs either the amount they saw, or a refusal that names the amount now.
-
-**Options considered:**
-
-1. Lock the prices in the cart when each line is set, and charge the locked prices at checkout.
-2. Charge the live price at checkout with no guard. The customer pays whatever the price is at that moment.
-3. Let the client send the total it showed, as an optional expected total. Compare it with the final total inside the checkout transaction, and refuse a mismatch with `409 PRICE_CHANGED`, which carries the current total.
-
-**Choice:** Option 3. The expected total is optional. When it is sent and differs from the final total, nothing is placed and the response names the current total. When it is omitted, checkout runs at current prices as it does without the guard.
-
-The comparison runs after the stock is taken and after any coupon discount is applied, and immediately before the charge. The expected total is the total the customer saw, and with a coupon that is the discounted figure, so the comparison uses the final total and not the subtotal. Comparing with the subtotal would refuse a correct discounted total, or accept an undiscounted one. Running the comparison before the charge means a changed price is never charged, and no later step runs for a refused checkout.
-
-**Why:** Option 1 contradicts the decision that carts store no prices. A copy of the price held in the cart drifts from the product, and an open cart could be checked out at a price the store no longer offers for as long as it stayed open. Option 2 leaves the amount to the store alone. The customer can be charged more than they agreed to, and has no means of knowing. Option 3 keeps prices live and makes the agreement explicit: the customer pays the amount they saw, or nothing is placed. The comparison reads the same prices that the order snapshot records, inside the same transaction, so the figure compared is the figure charged and stored. The refusal rolls back the whole transaction, so stock, the claimed idempotency key and the order number are as they were, and the same cart can be checked out again with the same key at the new total.
-
-**Consequences:** A checkout that sends a stale total is refused, and the customer must see the new total and check out again. The web app sends the subtotal its cart view shows, and after a refusal it reads the cart again so the new total appears there. A client that omits the field keeps the old behaviour and can still be charged a price it did not see. Because the stock step comes first, a cart that is both short of stock and repriced is answered with the stock refusal. A price that changes after this transaction has read it is simply later than the checkout: the order records and charges the price that was read, and that is the price the customer was shown.
-
-## Decision: Products change in the database, and admin product editing is deferred
-
-**Context:** Testers need to change a price or a stock level to see `PRICE_CHANGED` and `INSUFFICIENT_STOCK` happen. Editing products through the API would need its own contract, authorisation, validation and tests, and it would add a second writer to the catalogue. This service exists for checkout correctness, and the catalogue is only its input.
-
-**Options considered:**
-
-1. An administrator endpoint to create and edit products, guarded by the admin key.
-2. A documented database statement for changing a price or stock level, relying on the constraints the database already enforces.
-
-**Choice:** Option 2. The README shows the statements. The contract has no operation that edits products, and the tests that need a changed price make the change directly in the database.
-
-**Why:** A product endpoint would bring a set of questions that have nothing to do with checkout: which fields may change, what a change does to carts that are open, and how a change is recorded. Checkout already handles a price that changes while a cart is open. The database refuses a negative price or stock level and a non-integer amount, so the statements cannot store values the service could not account for. The admin key is a placeholder rather than authentication, so an endpoint guarded by it would present a control that is not one.
-
-**Consequences:** Products cannot be changed through the API, and nothing records who changed a price or when. A statement run against the database bypasses the contract's validation, so a bad value is refused by a database constraint rather than with a Problem Details answer. Admin product editing is deferred. A store run for customers would need it, and the price guard above would then protect them from any change it makes.
-
-## Decision: The admin report is calculated on each request
-
-**Context:** The administrator needs the store's totals: orders placed, units sold of each product, gross revenue, discounts, net revenue, coupons generated, redeemed and still available, and milestones reached without a coupon. Every figure must agree with the order list and the coupon list the administrator can read, and none may disagree with the rows it summarises. A stored total is a second copy of facts that the orders and coupons already hold, and every write that changes those facts would have to change the copy as well.
-
-**Options considered:**
-
-1. Running totals: counters, held in a totals row or per product, updated in the same transaction as each checkout and each coupon issue, and read by the report.
-2. A read model: summary tables rebuilt from the orders and coupons after each change, or on a schedule, and read by the report.
-3. Calculation on each request: the report aggregates the orders and coupons when it is asked for, inside one read-only snapshot. Nothing is stored.
-
-**Choice:** Option 3. The report runs its queries in one `REPEATABLE READ READ ONLY` transaction. A read stores nothing and writes nothing.
-
-**Why:** The report and the order list read the same rows, so the two agree by construction, and no discipline is needed to keep them agreeing. Option 1 puts the burden on every writer: checkout, coupon issue and coupon redemption must each update the totals in the same transaction, and a path that misses an update drifts with no signal. Option 2 is correct only as of its last rebuild, so the report can disagree with the lists it is meant to summarise. The snapshot matters as well. Without it, a checkout that committed between the query for orders and the query for coupons would leave the order count and the coupon figures describing two different states. Some figures need no stored state at all. Each order's total equals its subtotal less its discount, a constraint in the schema, so net revenue equals gross revenue less discounts whatever the orders are. Unrewarded milestones are the milestones the order count has reached, less the coupons already issued, so they follow from two counts.
-
-**Consequences:** Each report reads every order, so its cost grows with the store. At this scale that is a sum over a few rows per order, which is cheap. The report reads without taking row locks, so it does not hold up checkout, and checkout does not hold up the report. When the aggregate becomes too slow, the scaling path is option 1, with the counters written in the same transaction as the orders and coupons they count. A counter and the rows it counts then commit or roll back together, and the reconciliation check in the tests confirms that each counter equals the sum it replaces. A read model is worth its lag only when the report must run on another database, because it trades the cost of the query for a delay that the report would have to disclose.
+This document explains how the service keeps its rules when requests overlap, are retried or fail, and why it is built the way it is. The invariants table shows where each rule is enforced. The sections after it give the semantics chosen where the requirements were open, the reasoning behind each material decision, the transaction strategy, the money and error rules, what is built and what is deferred, how the design grows beyond one instance, how AI tools were used, and what to examine next.
+
+## Overview
+
+The service sells products from a catalogue with limited stock, turns customers' carts into orders, and rewards every nth placed order with a single-use percentage coupon. The difficulty is not the endpoints. It is what happens when requests overlap: two checkouts competing for the last units, a client retrying after a timeout, two checkouts redeeming one coupon, a payment declined after stock was claimed, or a price changing between the moment a customer reads a cart and the moment they pay.
+
+Five choices carry most of the design:
+
+- **The database enforces the rules.** Stock, order numbers, coupon redemption and milestones are protected by constraints, row locks and conditional updates in Postgres. No guarantee depends on one process, so the rules hold however many API instances connect.
+- **A checkout is one transaction** that places the order in full or changes nothing. Its idempotency key is claimed inside that transaction, so a retry either receives the stored response or waits for the attempt it repeats.
+- **Carts hold no prices.** A checkout is priced at current prices. A client may send the total it saw, and a difference is refused before any charge.
+- **Coupons belong to the customer who placed the milestone order.** A coupon is spent only by the placed order that uses it.
+- **Money is integer cents, and the API is written as an OpenAPI document before the handlers.** Each error has a stable code, and each HTTP status has one meaning.
+
+Two scope limits are deliberate. Customer identity is a header the client claims, and the payment gateway is an in-process fake. Both are covered under deferred work.
+
+## Invariants and where they are enforced
+
+Each row names a rule and the mechanism that holds it: a constraint, a row lock or a conditional update. File paths are relative to the repository root.
+
+| Invariant | Enforced by |
+| --- | --- |
+| Stock never goes negative, and no more is sold than is in stock | `products.stock CHECK (stock >= 0)` in `api/migrations/0001_create_products.sql`. Checkout runs `UPDATE products SET stock = stock - $2 WHERE id = $1 AND stock >= $2` for each line (`takeStock`). A statement that changes no row is a shortage. Lines are taken in ascending product order. |
+| A cart produces at most one order | `lockEditableCart` locks the cart row with `FOR UPDATE` and refuses a checked-out cart. `orders.cart_id UNIQUE` holds the rule even without the lock. |
+| Edits to a cart and its checkout never interleave | Every cart edit and every checkout takes the cart row lock first. A waiting caller re-reads the committed status once the holder ends. |
+| A retry never places a second order | `idempotency_keys` has the primary key `(customer_id, idempotency_key)`. Checkout claims the key with `INSERT ... ON CONFLICT DO NOTHING` as its first step, so a concurrent attempt waits on the claim until the first one commits or rolls back. |
+| A key is never replayed for a different request | The request fingerprint, a SHA-256 digest of the cart and every checkout option with defaults applied, is stored with the key and compared before any replay (`IDEMPOTENCY_KEY_REUSED`). |
+| Order numbers are unique, start at 1 and have no gaps | `orders.order_number UNIQUE CHECK (order_number >= 1)`. The `order_counter` row is incremented with `UPDATE ... RETURNING` as the last write before the order insert, so a rolled-back checkout gives its number back. |
+| A coupon is redeemed by at most one order | Checkout locks the coupon row (`lockCouponByCode`, `FOR UPDATE`) and checks its redemption. `orders.coupon_code UNIQUE REFERENCES coupons` stops a second order for the same coupon even if the lock were removed. |
+| A coupon records at most one order, and an order at most one coupon | `coupons.redeemed_by_order_id UNIQUE REFERENCES orders`. A checkout names one coupon field. |
+| A coupon belongs to the milestone customer | `coupons.customer_id` is copied from the order numbered k×n when the coupon is issued. Checkout compares it with the calling customer under the coupon lock (`COUPON_NOT_OWNED`). |
+| One coupon per milestone | `coupons.milestone UNIQUE`. Generation locks the counter row before it counts issued coupons. |
+| A coupon is issued only for a reached milestone | Generation computes `floor(orders / n)` under the counter lock and refuses when the next milestone lies beyond it (`NO_ELIGIBLE_MILESTONE`). |
+| The total is the subtotal less the discount, and is never negative | `orders_total_is_subtotal_less_discount` and `total_cents >= 0`. The discount is `floor(subtotal × percent / 100)` with the percentage between 0 and 100, so it cannot exceed the subtotal (`discountCents`). |
+| An order's coupon fields are either all present or all absent | `orders_coupon_fields_together`. |
+| A placed order never changes | No statement in the service updates or deletes `orders` or `order_lines`. Names and prices are copied in at checkout. The code paths hold this, not a trigger. |
+| The lines and subtotal of an order match what was charged | Both are written in the checkout transaction from the same read that the price guard and the charge use. The code holds this, not a constraint. |
+| The customer pays the total they saw | The price guard runs inside the checkout transaction, after the discount and before the charge (`PRICE_CHANGED`). |
+| A failed checkout leaves nothing behind | Stock, coupon redemption, order number, order, cart status and idempotency record are written in one transaction and roll back together. |
+| A cart has one line per product, with a quantity from 1 to 99 | `cart_lines` primary key `(cart_id, product_id)` and `CHECK (quantity BETWEEN 1 AND 99)`. Setting a line is an upsert. |
+| Money is exact | Money columns are integer cents with non-negative checks, and the pricing module uses integer arithmetic only. |
+| Customers see only their own carts, orders and coupons | Every query filters on the owner. Another customer's cart or order is answered exactly like a missing one. |
+| Reports change nothing and agree with the lists | The report reads in one `REPEATABLE READ READ ONLY` transaction and stores nothing. |
+| The schema and seed data apply once and never reset data | Migrations run under a transaction-scoped advisory lock and are recorded in `schema_migrations`. Seeding uses `INSERT ... ON CONFLICT (id) DO NOTHING`. |
+
+## Ambiguities and the semantics chosen
+
+The requirements left these questions open. Each choice is stated here and is exercised by the tests where the behaviour can be observed.
+
+1. **Coupon ownership.** The coupon for milestone k goes to the customer who placed order k×n, and only that customer can redeem it. A customer with no order at a milestone never receives its coupon. Another customer's coupon is answered `COUPON_NOT_OWNED` rather than hidden as not found. Carts and orders are hidden because they are looked up by identifier. A coupon is a code the customer types, and the answer lets a mistyped code (`COUPON_NOT_FOUND`) be told apart from a real code that is not theirs. The cost is that a code's existence is disclosed to whoever already holds it.
+2. **What counts toward a milestone.** Every placed order counts, including orders that redeemed a coupon. Milestone k is reached by order number k×n. Order numbers have no gaps and orders are never deleted, so a failed checkout never counts, and a reached milestone stays reached.
+3. **The backlog.** Each generate call issues one coupon, for the oldest reached milestone that has none, and reports how many reached milestones still wait. When none is waiting, the call is refused with `NO_ELIGIBLE_MILESTONE`. Nothing issues coupons on a timer, so a missed milestone waits until an administrator asks.
+4. **Redemption.** A coupon is spent only by a placed order. A failed checkout leaves it unredeemed, including a checkout with an empty cart, a short line, a changed price or a declined payment. A checkout takes at most one coupon. Coupons never expire, and each keeps the percentage it was issued with.
+5. **Discount base.** The discount is worked out once, on the subtotal, and rounded down to a whole cent. Two lines of 995 cents at 10 percent give a discount of 199 cents, not 198.
+6. **Prices.** A cart shows the price in force when it is read. A checkout is priced at the prices read inside its own transaction. If the client sent an expected total and it differs, nothing is placed and the response carries the current total. If no expected total was sent, the checkout proceeds at current prices. A placed order keeps the prices it was placed at.
+7. **Expected total with a coupon.** The expected total is the total the customer sees, so with a coupon it is the discounted total. Comparing it with the subtotal would refuse a correct total, or accept an undiscounted one.
+8. **Stock timing.** Setting a cart line checks the requested quantity against current stock and refuses an excess with `INSUFFICIENT_STOCK`, but holds nothing. Stock is taken only when an order is placed, so a line that passed the check can still be refused at checkout.
+9. **Quantities.** A cart-line request sets the quantity; it does not add to it, so repeating the request changes nothing. Zero is not a quantity. Removal is a separate delete.
+10. **Retries.** A checkout must carry an `Idempotency-Key`. A retry with the same key and the same request receives the first attempt's response, and waits for that attempt if it is still running. Only a successful checkout stores its response. A refused or declined checkout frees its key, so a corrected retry is evaluated afresh.
+11. **Checked-out carts.** A checked-out cart cannot be edited or checked out again, even under a new key. A key protects retries of the attempt that placed the order, not later purchases.
+12. **Empty carts** are refused with `CART_EMPTY` (422), and the cart stays open.
+13. **Declines.** A declined checkout places nothing, takes no stock and no order number, and leaves the cart open. The same cart can be checked out again with an approving token, and the same key works again, because a declined attempt stored nothing.
+14. **Settings.** The milestone interval and the coupon percentage are read at startup and fixed for the life of the process. Changing the interval once orders exist would move milestones that have already passed.
+15. **Products.** Prices and stock are changed in the database, where the constraints still apply. Checkout handles a price or stock change that happens while a cart is open.
