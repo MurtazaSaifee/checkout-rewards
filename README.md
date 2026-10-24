@@ -102,6 +102,8 @@ A cart line is set to a quantity, not added to. `PUT /api/carts/{cartId}/lines/{
 
 `POST /api/carts/{cartId}/checkout` places the cart's order and returns it with status 201. Checkout runs in one database transaction that either places the whole order or changes nothing: it locks the cart, prices the lines at current prices, takes stock with one conditional update per line, takes the next order number, and records the order and its lines.
 
+Every checkout request must send an `Idempotency-Key` header, 1 to 128 letters, digits, `.`, `_`, `:` or `-`, that names one attempt. A retry with the same key and the same request returns the first attempt's response, byte for byte, and places no second order. Reusing the key for a different cart is refused with `IDEMPOTENCY_KEY_REUSED`. A request without the header is refused with `IDEMPOTENCY_KEY_REQUIRED`. Only a successful checkout is remembered: a checkout that fails, for example with `INSUFFICIENT_STOCK` or `CART_EMPTY`, stores nothing, so the same key works again once the cart is fixed.
+
 If any line is short, the response is `409 INSUFFICIENT_STOCK`, and its `shortLines` list every short line with the quantity requested and the quantity available. A failed checkout takes no order number, so numbers run 1, 2, 3 with no gaps. A cart is checked out once: a second attempt, or a change to the cart afterwards, is refused with `CART_ALREADY_CHECKED_OUT`.
 
 An order keeps the names, unit prices and totals it had when it was placed, so later price or name changes do not alter it. `GET /api/orders` lists the calling customer's orders, and `GET /api/orders/{orderId}` returns one. An order that belongs to another customer is reported as `ORDER_NOT_FOUND`, the same as an order that does not exist.

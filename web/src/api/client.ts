@@ -90,14 +90,29 @@ export async function removeCartLine(
   return readJson<Cart>(response);
 }
 
-/** Places the order for the cart in full, or changes nothing. A refusal comes back as an ApiError. */
-export async function checkOutCart(customerId: string, cartId: string, signal?: AbortSignal): Promise<Order> {
+/**
+ * Places the order for the cart in full, or changes nothing. The key names this attempt:
+ * a retry with the same key gets the same answer back. A refusal comes back as an ApiError.
+ */
+export async function checkOutCart(
+  customerId: string,
+  cartId: string,
+  idempotencyKey: string,
+  signal?: AbortSignal,
+): Promise<Order> {
   const response = await fetch(`${API_BASE}/carts/${cartId}/checkout`, {
     method: 'POST',
-    headers: customerHeaders(customerId),
+    headers: { ...customerHeaders(customerId), 'Idempotency-Key': idempotencyKey },
     signal,
   });
   return readJson<Order>(response);
+}
+
+/** A key for one checkout attempt. Built from random bytes, so it works outside a secure context too. */
+export function newIdempotencyKey(): string {
+  return Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) =>
+    byte.toString(16).padStart(2, '0'),
+  ).join('');
 }
 
 /** The calling customer's orders, oldest first. */

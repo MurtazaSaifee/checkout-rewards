@@ -48,7 +48,8 @@ export function useTestDatabase(options: TestDatabaseOptions = {}): {
 
     const url = new URL(ADMIN_DATABASE_URL);
     url.pathname = `/${databaseName}`;
-    state.pool = new Pool({ connectionString: url.toString(), max: 5 });
+    // Enough connections for ten simultaneous requests to run at once, as the concurrency cases need.
+    state.pool = new Pool({ connectionString: url.toString(), max: 12 });
 
     await bootstrapDatabase(state.pool);
     state.app = createApp({
@@ -60,6 +61,9 @@ export function useTestDatabase(options: TestDatabaseOptions = {}): {
   });
 
   afterAll(async () => {
+    // Dropping the database with FORCE closes any connection still open, and an idle pooled
+    // client can report that closure after end() has resolved. The closure is expected here.
+    state.pool.on('error', () => undefined);
     await state.pool.end();
     await adminPool.query(`DROP DATABASE IF EXISTS "${databaseName}" WITH (FORCE)`);
     await adminPool.end();

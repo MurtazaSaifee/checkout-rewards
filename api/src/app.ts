@@ -5,6 +5,7 @@ import { contractValidator } from './http/contract.js';
 import { requireAdminKey } from './http/admin-key.js';
 import { requireCustomerIdentity } from './http/customer-identity.js';
 import { problemErrorHandler } from './http/error-handler.js';
+import { requireIdempotencyKey } from './http/idempotency-key.js';
 import { notFoundHandler } from './http/not-found.js';
 import { requestContext } from './http/request-context.js';
 import type { Logger } from './logging.js';
@@ -36,6 +37,8 @@ export function createApp(deps: AppDependencies): Express {
   app.use('/api/coupons', requireCustomerIdentity());
   // The same for admin operations: a missing or wrong key gets ADMIN_KEY_INVALID.
   app.use('/api/admin', requireAdminKey(deps.adminKey));
+  // Checkout requires the key, and this runs ahead of the validator for the same reason.
+  app.post('/api/carts/:cartId/checkout', requireIdempotencyKey());
   app.use(contractValidator());
 
   app.use('/api', productsRouter(deps.db));

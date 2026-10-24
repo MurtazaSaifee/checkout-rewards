@@ -9,6 +9,7 @@ import { OrdersPanel } from './OrdersPanel';
 import { OrderView } from './OrderView';
 import { ProductSection } from './ProductSection';
 import { RaceTool } from './RaceTool';
+import { RetryRace } from './RetryRace';
 import { useCart } from './useCart';
 
 export function App() {
@@ -78,6 +79,7 @@ function CustomerWorkspace({ customer, couponsVersion }: { customer: CustomerId;
       <OrderView customer={customer} orderId={selectedOrderId} />
       <CouponsPanel customer={customer} version={couponsVersion} />
       <RaceTool customer={customer} onFinished={refreshAfterOrders} />
+      <RetryRace customer={customer} onFinished={refreshAfterOrders} />
     </>
   );
 }

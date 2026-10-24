@@ -202,13 +202,28 @@ paths:
         lines are priced at current prices, stock is taken for every line, and
         the next order number is assigned. A cart yields at most one order, and
         a checked-out cart can no longer be changed.
+
+
+        Every checkout needs an `Idempotency-Key` header. Keys are scoped to the
+        customer. A retry with the same key and the same request returns the
+        original status and body, even when the first attempt is still running:
+        the retry waits for it. The same key with a different request is
+        answered 422 IDEMPOTENCY_KEY_REUSED. A checkout that fails stores nothing
+        under its key, so a retry with that key is evaluated again.
       parameters:
         - $ref: '#/components/parameters/RequestIdHeader'
         - $ref: '#/components/parameters/CustomerIdHeader'
+        - $ref: '#/components/parameters/IdempotencyKeyHeader'
         - $ref: '#/components/parameters/CartId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CheckoutRequest'
       responses:
         '201':
-          description: The placed order.
+          description: The placed order. A replay returns the original status and body.
           headers:
             X-Request-Id:
               $ref: '#/components/headers/RequestId'
@@ -385,6 +400,17 @@ components:
         request without it is answered 400 CUSTOMER_ID_REQUIRED. The identifier
         is claimed, not verified, so it is a business rule and not a security
         control.
+      schema:
+        type: string
+        pattern: '^[A-Za-z0-9._:-]{1,128}$'
+    IdempotencyKeyHeader:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: >-
+        Identifies one checkout attempt. Send the same key to retry the same
+        checkout. A missing or blank key is answered 400
+        IDEMPOTENCY_KEY_REQUIRED.
       schema:
         type: string
         pattern: '^[A-Za-z0-9._:-]{1,128}$'
@@ -597,6 +623,13 @@ components:
           minimum: 0
           description: The amount charged, in cents.
           example: 3350
+    CheckoutRequest:
+      type: object
+      description: >-
+        Options for a checkout. The body is optional. No options are defined
+        yet, so the only body accepted is an empty object.
+      additionalProperties: false
+      properties: {}
     OrderList:
       type: object
       required:
@@ -733,6 +766,8 @@ components:
         - ORDER_NOT_FOUND
         - ADMIN_KEY_INVALID
         - NO_ELIGIBLE_MILESTONE
+        - IDEMPOTENCY_KEY_REQUIRED
+        - IDEMPOTENCY_KEY_REUSED
     Problem:
       type: object
       description: RFC 9457 Problem Details, extended with `code` and `requestId`.
@@ -816,6 +851,8 @@ components:
       description: >-
         The request is well formed but violates a business rule. CART_EMPTY
         means the cart has no lines, so there is nothing to order.
+        IDEMPOTENCY_KEY_REUSED means the key was already used for a different
+        request.
       headers:
         X-Request-Id:
           $ref: '#/components/headers/RequestId'

@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import request from 'supertest';
 import type { Express } from 'express';
 import { createCart, setLine } from './cart-api.js';
@@ -8,10 +9,18 @@ import type { Order } from './api-types.js';
 /**
  * The one place tests check a cart out. Every checkout in the suite goes through
  * here, so a change to the checkout request (for example a required header) is
- * made once.
+ * made once. Each call sends a fresh idempotency key unless the test passes one.
  */
-export function checkOut(app: Express, customerId: string, cartId: string) {
-  return request(app).post(`/api/carts/${cartId}/checkout`).set('X-Customer-Id', customerId);
+export function checkOut(
+  app: Express,
+  customerId: string,
+  cartId: string,
+  idempotencyKey: string = randomUUID(),
+) {
+  return request(app)
+    .post(`/api/carts/${cartId}/checkout`)
+    .set('X-Customer-Id', customerId)
+    .set('Idempotency-Key', idempotencyKey);
 }
 
 export function viewOrder(app: Express, customerId: string, orderId: string) {
