@@ -3,6 +3,7 @@ import { createApp } from './app.js';
 import { loadConfig } from './config.js';
 import { bootstrapDatabase } from './db/bootstrap.js';
 import { createLogger } from './logging.js';
+import { FakePaymentGateway } from './modules/payments/fake-payment-gateway.js';
 
 /**
  * Process entry point. Validates configuration, brings the database to the
@@ -17,7 +18,7 @@ async function main(): Promise<void> {
   await bootstrapDatabase(db);
   logger.info('database schema and seed data are current');
 
-  const app = createApp({ db, logger });
+  const app = createApp({ db, logger, payments: new FakePaymentGateway() });
   const server = app.listen(config.port, () => {
     logger.info({ port: config.port }, 'api listening');
   });

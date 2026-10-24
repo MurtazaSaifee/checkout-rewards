@@ -15,3 +15,18 @@ export class IdempotencyKeyReusedError extends DomainError {
     });
   }
 }
+
+/**
+ * The payment gateway declined the charge. Thrown inside the checkout
+ * transaction, so the stock taken so far and the claimed key roll back with it.
+ */
+export class PaymentDeclinedError extends DomainError {
+  constructor() {
+    super({
+      status: 402,
+      code: 'PAYMENT_DECLINED',
+      title: 'Payment declined',
+      detail: 'The payment was declined. Nothing was placed, and the cart is still open.',
+    });
+  }
+}

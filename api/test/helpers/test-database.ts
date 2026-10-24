@@ -5,6 +5,7 @@ import { Pool } from 'pg';
 import { createApp } from '../../src/app.js';
 import { bootstrapDatabase } from '../../src/db/bootstrap.js';
 import { createLogger, type Logger } from '../../src/logging.js';
+import { FakePaymentGateway } from '../../src/modules/payments/fake-payment-gateway.js';
 
 /**
  * Admin connection used to create and drop per-file databases. CI points this
@@ -45,6 +46,7 @@ export function useTestDatabase(options: { logger?: Logger } = {}): {
     state.app = createApp({
       db: state.pool,
       logger: options.logger ?? createLogger({ level: 'silent' }),
+      payments: new FakePaymentGateway(),
     });
   });
 

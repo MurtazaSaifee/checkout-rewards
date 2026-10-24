@@ -10,11 +10,13 @@ import type { Logger } from './logging.js';
 import { cartsRouter } from './modules/carts/carts.routes.js';
 import { checkoutRouter } from './modules/checkout/checkout.routes.js';
 import { ordersRouter } from './modules/orders/orders.routes.js';
+import { type PaymentGateway } from './modules/payments/payment-gateway.js';
 import { productsRouter } from './modules/products/products.routes.js';
 
 export interface AppDependencies {
   db: Pool;
   logger: Logger;
+  payments: PaymentGateway;
 }
 
 /** Builds the HTTP application. Tests and the server both enter here. */
@@ -33,7 +35,7 @@ export function createApp(deps: AppDependencies): Express {
 
   app.use('/api', productsRouter(deps.db));
   app.use('/api', cartsRouter(deps.db));
-  app.use('/api', checkoutRouter(deps.db));
+  app.use('/api', checkoutRouter(deps.db, deps.payments));
   app.use('/api', ordersRouter(deps.db));
 
   app.use(notFoundHandler);
