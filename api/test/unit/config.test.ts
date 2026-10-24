@@ -7,6 +7,8 @@ describe('loadConfig', () => {
       port: 3000,
       databaseUrl: 'postgres://postgres:postgres@localhost:5432/checkout_rewards',
       logLevel: 'info',
+      adminKey: 'local-admin-key',
+      coupons: { everyNOrders: 5, percentOff: 10 },
     });
   });
 
@@ -17,10 +19,30 @@ describe('loadConfig', () => {
         DATABASE_URL: 'postgres://app@db.internal:5432/rewards',
         LOG_LEVEL: 'debug',
       }),
-    ).toEqual({
+    ).toMatchObject({
       port: 8081,
       databaseUrl: 'postgres://app@db.internal:5432/rewards',
       logLevel: 'debug',
+    });
+  });
+
+  it('reads the admin key and the coupon rules, and trims the admin key', () => {
+    expect(
+      loadConfig({
+        ADMIN_KEY: '  s3cret-key  ',
+        COUPON_EVERY_N_ORDERS: '3',
+        COUPON_PERCENT_OFF: '100',
+      }),
+    ).toMatchObject({
+      adminKey: 's3cret-key',
+      coupons: { everyNOrders: 3, percentOff: 100 },
+    });
+  });
+
+  it('accepts the smallest milestone frequency and the smallest percentage', () => {
+    expect(loadConfig({ COUPON_EVERY_N_ORDERS: '1', COUPON_PERCENT_OFF: '1' }).coupons).toEqual({
+      everyNOrders: 1,
+      percentOff: 1,
     });
   });
 
@@ -31,6 +53,17 @@ describe('loadConfig', () => {
     ['PORT', '70000'],
     ['LOG_LEVEL', 'verbose'],
     ['DATABASE_URL', ''],
+    ['ADMIN_KEY', ''],
+    ['ADMIN_KEY', '   '],
+    ['COUPON_EVERY_N_ORDERS', '0'],
+    ['COUPON_EVERY_N_ORDERS', '-1'],
+    ['COUPON_EVERY_N_ORDERS', '2.5'],
+    ['COUPON_EVERY_N_ORDERS', 'five'],
+    ['COUPON_EVERY_N_ORDERS', ''],
+    ['COUPON_PERCENT_OFF', '0'],
+    ['COUPON_PERCENT_OFF', '101'],
+    ['COUPON_PERCENT_OFF', '10%'],
+    ['COUPON_PERCENT_OFF', ''],
   ])('refuses to start when %s is %j', (name, value) => {
     expect(() => loadConfig({ [name]: value })).toThrow(ConfigError);
     expect(() => loadConfig({ [name]: value })).toThrow(name);

@@ -17,3 +17,17 @@ export function lineAmountCents(line: PricedLine): number {
 export function subtotalCents(lines: readonly PricedLine[]): number {
   return lines.reduce((sum, line) => sum + lineAmountCents(line), 0);
 }
+
+/**
+ * Milestones reached by an order count with frequency n: floor(orderCount / n).
+ * Order numbers run 1, 2, 3 with no gaps, so milestone k is reached by the order
+ * numbered k × n.
+ */
+export function milestonesReached(orderCount: number, everyN: number): number {
+  return Math.floor(orderCount / everyN);
+}
+
+/** Whether an order number reaches a milestone: it is a positive multiple of n. */
+export function isMilestoneOrder(orderNumber: number, everyN: number): boolean {
+  return orderNumber >= 1 && orderNumber % everyN === 0;
+}

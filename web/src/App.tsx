@@ -1,6 +1,8 @@
 import { useCallback, useState } from 'react';
 import type { Order } from './api/client';
+import { AdminPanel } from './AdminPanel';
 import { CartPanel } from './CartPanel';
+import { CouponsPanel } from './CouponsPanel';
 import { CustomerSwitcher } from './CustomerSwitcher';
 import { type CustomerId, loadCustomer, saveCustomer } from './customer';
 import { OrdersPanel } from './OrdersPanel';
@@ -12,10 +14,16 @@ import { useCart } from './useCart';
 
 export function App() {
   const [customer, setCustomer] = useState<CustomerId>(loadCustomer);
+  // Shared with the administrator's panel: issuing a coupon refreshes every customer's coupon list.
+  const [couponsVersion, setCouponsVersion] = useState(0);
 
   const switchCustomer = useCallback((next: CustomerId) => {
     saveCustomer(next);
     setCustomer(next);
+  }, []);
+
+  const couponIssued = useCallback(() => {
+    setCouponsVersion((version) => version + 1);
   }, []);
 
   return (
@@ -26,7 +34,9 @@ export function App() {
       </header>
 
       {/* Keyed by customer, so one customer's cart state never shows for another. */}
-      <CustomerWorkspace key={customer} customer={customer} />
+      <CustomerWorkspace key={customer} customer={customer} couponsVersion={couponsVersion} />
+
+      <AdminPanel onIssued={couponIssued} />
     </main>
   );
 }
@@ -35,7 +45,7 @@ export function App() {
  * Everything a customer sees and does. It is keyed by customer, so the selected
  * order and the refresh counters all start afresh when the customer changes.
  */
-function CustomerWorkspace({ customer }: { customer: CustomerId }) {
+function CustomerWorkspace({ customer, couponsVersion }: { customer: CustomerId; couponsVersion: number }) {
   const [selectedOrderId, setSelectedOrderId] = useState<string | undefined>(undefined);
   const [ordersVersion, setOrdersVersion] = useState(0);
   const [stockVersion, setStockVersion] = useState(0);
@@ -67,6 +77,7 @@ function CustomerWorkspace({ customer }: { customer: CustomerId }) {
         onSelect={setSelectedOrderId}
       />
       <OrderView customer={customer} orderId={selectedOrderId} />
+      <CouponsPanel customer={customer} version={couponsVersion} />
       <RaceTool customer={customer} onFinished={refreshAfterOrders} />
       <RetryRace customer={customer} onFinished={refreshAfterOrders} />
     </>

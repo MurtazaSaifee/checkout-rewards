@@ -35,6 +35,10 @@ tags:
     description: >-
       A customer sees only their own orders. Another customer's order is
       answered as not found.
+  - name: coupons
+    description: >-
+      A customer sees only their own coupons. Each coupon belongs to the
+      customer who placed the milestone order it rewards.
   - name: admin
     description: >-
       Store administration. Operations with this tag are restricted to the
@@ -286,6 +290,89 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '404':
           $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /coupons:
+    get:
+      tags:
+        - coupons
+      operationId: listMyCoupons
+      summary: List the calling customer's coupons, in milestone order.
+      description: >-
+        Each coupon shows whether an order has redeemed it. Coupons never expire.
+      parameters:
+        - $ref: '#/components/parameters/RequestIdHeader'
+        - $ref: '#/components/parameters/CustomerIdHeader'
+      responses:
+        '200':
+          description: The customer's coupons, oldest milestone first.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CouponList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /admin/coupons:
+    get:
+      tags:
+        - admin
+      operationId: listAllCoupons
+      summary: List every coupon with the customer it was issued to.
+      security:
+        - adminKey: []
+      parameters:
+        - $ref: '#/components/parameters/RequestIdHeader'
+      responses:
+        '200':
+          description: Every coupon, oldest milestone first.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminCouponList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    post:
+      tags:
+        - admin
+      operationId: generateCoupon
+      summary: Issue a coupon for the oldest unrewarded milestone.
+      description: >-
+        Issues at most one coupon per call, for the oldest reached milestone
+        that has no coupon yet, to the customer who placed that milestone's
+        order. The response says how many reached milestones still have no
+        coupon. Concurrent calls never issue two coupons for one milestone.
+      security:
+        - adminKey: []
+      parameters:
+        - $ref: '#/components/parameters/RequestIdHeader'
+      responses:
+        '201':
+          description: The coupon issued, its customer and the unrewarded milestones remaining.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GeneratedCoupon'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/Conflict'
         '500':
           $ref: '#/components/responses/InternalError'
 components:
@@ -566,6 +653,112 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/Order'
+    Coupon:
+      type: object
+      required:
+        - code
+        - percentOff
+        - milestone
+        - redeemed
+      additionalProperties: false
+      properties:
+        code:
+          type: string
+          description: >-
+            Ten characters from letters and digits, without 0, O, 1, I or L, so
+            a code is easy to type. The customer gives it at checkout to redeem.
+          pattern: '^[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{10}$'
+          example: K7HQ2XM9PA
+        percentOff:
+          type: integer
+          minimum: 1
+          maximum: 100
+          description: The percentage the coupon takes off. Fixed when the coupon was issued.
+          example: 10
+        milestone:
+          type: integer
+          minimum: 1
+          description: The milestone the coupon rewards, counting from 1. Milestone k is reached by order number k times n.
+          example: 1
+        redeemed:
+          type: boolean
+          description: Whether an order has redeemed the coupon.
+          example: false
+    CouponList:
+      type: object
+      required:
+        - coupons
+      additionalProperties: false
+      properties:
+        coupons:
+          type: array
+          items:
+            $ref: '#/components/schemas/Coupon'
+    GeneratedCoupon:
+      type: object
+      required:
+        - coupon
+        - customerId
+        - unrewardedMilestonesRemaining
+      additionalProperties: false
+      properties:
+        coupon:
+          $ref: '#/components/schemas/Coupon'
+        customerId:
+          type: string
+          description: The customer the coupon was issued to, who placed order number milestone times n.
+          example: alice
+        unrewardedMilestonesRemaining:
+          type: integer
+          minimum: 0
+          description: Reached milestones that still have no coupon after this one.
+          example: 0
+    AdminCoupon:
+      type: object
+      required:
+        - code
+        - percentOff
+        - milestone
+        - customerId
+        - issuedAt
+        - redeemedByOrderId
+      additionalProperties: false
+      properties:
+        code:
+          type: string
+          pattern: '^[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{10}$'
+          example: K7HQ2XM9PA
+        percentOff:
+          type: integer
+          minimum: 1
+          maximum: 100
+          example: 10
+        milestone:
+          type: integer
+          minimum: 1
+          example: 1
+        customerId:
+          type: string
+          description: The customer the coupon was issued to.
+          example: alice
+        issuedAt:
+          type: string
+          format: date-time
+        redeemedByOrderId:
+          type: string
+          format: uuid
+          nullable: true
+          description: The order that redeemed the coupon, or null while it is unredeemed.
+    AdminCouponList:
+      type: object
+      required:
+        - coupons
+      additionalProperties: false
+      properties:
+        coupons:
+          type: array
+          items:
+            $ref: '#/components/schemas/AdminCoupon'
     ErrorCode:
       type: string
       description: Stable machine-readable error identifier.
@@ -584,6 +777,8 @@ components:
         - INSUFFICIENT_STOCK
         - CART_EMPTY
         - ORDER_NOT_FOUND
+        - ADMIN_KEY_INVALID
+        - NO_ELIGIBLE_MILESTONE
         - IDEMPOTENCY_KEY_REQUIRED
         - IDEMPOTENCY_KEY_REUSED
         - PAYMENT_DECLINED
@@ -649,6 +844,16 @@ components:
         after the client re-reads the resource. CART_ALREADY_CHECKED_OUT means
         the cart was checked out. INSUFFICIENT_STOCK lists each short line in
         shortLines, with the requested and available quantities.
+        NO_ELIGIBLE_MILESTONE means no reached milestone is waiting for a coupon.
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/RequestId'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Unauthorized:
+      description: The admin key header is missing, or it does not match the configured admin key. ADMIN_KEY_INVALID.
       headers:
         X-Request-Id:
           $ref: '#/components/headers/RequestId'

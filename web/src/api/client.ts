@@ -11,6 +11,11 @@ export type OrderLine = components['schemas']['OrderLine'];
 export type OrderList = components['schemas']['OrderList'];
 /** The payment gateway's answer for one checkout: tok_ok approves, tok_decline declines. */
 export type PaymentToken = NonNullable<components['schemas']['CheckoutRequest']['paymentToken']>;
+export type Coupon = components['schemas']['Coupon'];
+export type CouponList = components['schemas']['CouponList'];
+export type GeneratedCoupon = components['schemas']['GeneratedCoupon'];
+export type AdminCoupon = components['schemas']['AdminCoupon'];
+export type AdminCouponList = components['schemas']['AdminCouponList'];
 
 /** Thrown for any non-2xx answer. Keeps the full body so the UI can show it raw. */
 export class ApiError extends Error {
@@ -134,6 +139,39 @@ export async function getOrder(customerId: string, orderId: string, signal?: Abo
     signal,
   });
   return readJson<Order>(response);
+}
+
+/** The calling customer's coupons, oldest milestone first. */
+export async function listMyCoupons(customerId: string, signal?: AbortSignal): Promise<CouponList> {
+  const response = await fetch(`${API_BASE}/coupons`, {
+    headers: customerHeaders(customerId),
+    signal,
+  });
+  return readJson<CouponList>(response);
+}
+
+/** Every admin operation sends the admin key. The key is a placeholder, not a security control. */
+function adminHeaders(adminKey: string): Record<string, string> {
+  return { Accept: 'application/json', 'X-Admin-Key': adminKey };
+}
+
+/** Issues a coupon for the oldest unrewarded milestone. A refusal comes back as an ApiError. */
+export async function generateCoupon(adminKey: string, signal?: AbortSignal): Promise<GeneratedCoupon> {
+  const response = await fetch(`${API_BASE}/admin/coupons`, {
+    method: 'POST',
+    headers: adminHeaders(adminKey),
+    signal,
+  });
+  return readJson<GeneratedCoupon>(response);
+}
+
+/** Every coupon issued, oldest milestone first, with its customer. */
+export async function listAllCoupons(adminKey: string, signal?: AbortSignal): Promise<AdminCouponList> {
+  const response = await fetch(`${API_BASE}/admin/coupons`, {
+    headers: adminHeaders(adminKey),
+    signal,
+  });
+  return readJson<AdminCouponList>(response);
 }
 
 async function readJson<T>(response: Response): Promise<T> {

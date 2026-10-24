@@ -18,7 +18,13 @@ async function main(): Promise<void> {
   await bootstrapDatabase(db);
   logger.info('database schema and seed data are current');
 
-  const app = createApp({ db, logger, payments: new FakePaymentGateway() });
+  const app = createApp({
+    db,
+    logger,
+    payments: new FakePaymentGateway(),
+    adminKey: config.adminKey,
+    coupons: config.coupons,
+  });
   const server = app.listen(config.port, () => {
     logger.info({ port: config.port }, 'api listening');
   });

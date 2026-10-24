@@ -3,6 +3,7 @@ import type { Express } from 'express';
 import { afterAll, beforeAll } from 'vitest';
 import { Pool } from 'pg';
 import { createApp } from '../../src/app.js';
+import { DEFAULT_COUPON_RULES, type CouponRules } from '../../src/config.js';
 import { bootstrapDatabase } from '../../src/db/bootstrap.js';
 import { createLogger, type Logger } from '../../src/logging.js';
 import { FakePaymentGateway } from '../../src/modules/payments/fake-payment-gateway.js';
@@ -14,6 +15,15 @@ import { FakePaymentGateway } from '../../src/modules/payments/fake-payment-gate
 const ADMIN_DATABASE_URL =
   process.env.TEST_DATABASE_URL ?? 'postgres://postgres:postgres@localhost:5432/postgres';
 
+/** The admin key every test app is started with. */
+export const TEST_ADMIN_KEY = 'test-admin-key';
+
+export interface TestDatabaseOptions {
+  logger?: Logger;
+  /** Overrides the coupon rules for this test file, for example n = 2 to reach milestones quickly. */
+  coupons?: Partial<CouponRules>;
+}
+
 interface TestDatabaseState {
   app: Express;
   pool: Pool;
@@ -24,7 +34,7 @@ interface TestDatabaseState {
  * named database, migrated and seeded from scratch, and dropped afterwards.
  * Nothing depends on a fixed database name, so files can run in parallel.
  */
-export function useTestDatabase(options: { logger?: Logger } = {}): {
+export function useTestDatabase(options: TestDatabaseOptions = {}): {
   readonly app: Express;
   readonly pool: Pool;
 } {
@@ -47,10 +57,15 @@ export function useTestDatabase(options: { logger?: Logger } = {}): {
       db: state.pool,
       logger: options.logger ?? createLogger({ level: 'silent' }),
       payments: new FakePaymentGateway(),
+      adminKey: TEST_ADMIN_KEY,
+      coupons: { ...DEFAULT_COUPON_RULES, ...options.coupons },
     });
   });
 
   afterAll(async () => {
+    // Dropping the database with FORCE closes any connection still open, and an idle pooled
+    // client can report that closure after end() has resolved. The closure is expected here.
+    state.pool.on('error', () => undefined);
     await state.pool.end();
     await adminPool.query(`DROP DATABASE IF EXISTS "${databaseName}" WITH (FORCE)`);
     await adminPool.end();
