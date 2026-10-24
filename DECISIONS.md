@@ -185,24 +185,23 @@ Coupon generation takes only the counter row. Setting a cart line takes the cart
 8. Insert the order, mark the coupon redeemed, insert the lines and mark the cart checked out. The order insert also carries a unique constraint on the coupon code, and a violation gives the same answer as the lock in step 4.
 9. Store the response against the key, and commit.
 
-Any error before step 9 rolls back the whole transaction, including the key claim.
+Any error before step 9 rolls back the whole transaction, including the key claim. `errors.test.ts` checks this with a gateway that fails once with an unexpected error instead of declining: the response is `500 INTERNAL_ERROR`, nothing is placed, and a retry with the same key then places the order.
 
 **Replays.** A replay sends the stored body through the same JSON serialiser. The bytes match the first response because the body holds only strings, integers, nulls and arrays. The idempotency test compares the raw text of both responses, so a change that serialised the body differently would fail it.
 
-**Concurrency tests.** These send simultaneous requests and check the outcome:
+**Concurrency tests.** These send simultaneous requests and check the outcome. Each test runs once unless its entry says it repeats the race in rounds.
 
-- `checkout.test.ts`: "lets exactly as many checkouts succeed as stock allows, fails the rest with INSUFFICIENT_STOCK, and leaves stock at zero"
-- `checkout.test.ts`: "is either included in the order or rejected, and the cart and the order always agree"
-- `checkout-idempotency.test.ts`: "places one order when ten simultaneous checkouts share a key, takes the stock once, and returns identical responses"
-- `checkout-idempotency.test.ts`: "makes a retry that arrives while the first attempt is still running wait for it, then replays its response"
-- `checkout-coupons.test.ts`: "lets exactly one checkout redeem the coupon and answers the other with 422 COUPON_ALREADY_REDEEMED, in every round"
-- `coupons.test.ts`: "issues exactly one coupon per unrewarded milestone and refuses the rest with NO_ELIGIBLE_MILESTONE"
-- `coupons.test.ts`: "refuses with 409 NO_ELIGIBLE_MILESTONE when the unique milestone constraint rejects the insert"
-- `cart-lines.test.ts`: "keeps a single line at the requested quantity when identical requests arrive at the same moment"
-- `cart-lines.test.ts`: "checks stock only as a courtesy, so two customers can each set a quantity up to the stock"
-- `admin-report-reconciliation.test.ts`: "counts every placed order, gapless from one, and the order count equals the highest order number"
+- `checkout.test.ts`: "lets exactly as many checkouts succeed as stock allows, fails the rest with INSUFFICIENT_STOCK, and leaves stock at zero". Eight checkouts race for the three units of `limited-hoodie`. One run.
+- `checkout.test.ts`: "is either included in the order or rejected, and the cart and the order always agree". An edit to a cart races its checkout. The race repeats in 20 rounds, each with a fresh cart.
+- `checkout-idempotency.test.ts`: "places one order when ten simultaneous checkouts share a key, takes the stock once, and returns identical responses". Ten attempts share one key. One run.
+- `checkout-idempotency.test.ts`: "makes a retry that arrives while the first attempt is still running wait for it, then replays its response". The test holds the cart's row lock from a second connection, so the first attempt stops part way through, and the retry is sent while it is stuck. The test checks that the retry waits, then gets the same response as the first attempt. One run.
+- `checkout-coupons.test.ts`: "lets exactly one checkout redeem the coupon and answers the other with 422 COUPON_ALREADY_REDEEMED, in every round". Two carts redeem one coupon at once. The race repeats in 10 rounds, each with its own coupon.
+- `coupons.test.ts`: "issues exactly one coupon per unrewarded milestone and refuses the rest with NO_ELIGIBLE_MILESTONE". Twelve generation calls run at once. One run.
+- `coupons.test.ts`: "refuses with 409 NO_ELIGIBLE_MILESTONE when the unique milestone constraint rejects the insert". This test is not simultaneous. A coupon row is inserted directly to stand in for a call that won the race, so the constraint is what refuses the insert. One run.
+- `cart-lines.test.ts`: "keeps a single line at the requested quantity when identical requests arrive at the same moment". Ten identical requests run at once. One run.
+- `admin-report-reconciliation.test.ts`: "counts every placed order, gapless from one, and the order count equals the highest order number". The test reads the result of mixed simultaneous waves, which run once in the test's setup.
 
-Simultaneous requests make overlap likely, but the tests do not choose an interleaving. Each runs several rounds and checks the outcome of every round. The first item in what to examine next covers deterministic interleavings.
+Simultaneous requests make overlap likely, but most of these tests do not choose an interleaving. The retry test holds a lock to choose one, and the first item in what to examine next extends that technique.
 
 **Money and rounding.**
 
