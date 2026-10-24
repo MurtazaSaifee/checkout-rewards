@@ -2,6 +2,7 @@ import request from 'supertest';
 import { describe, expect, it } from 'vitest';
 import { useTestDatabase } from '../helpers/test-database.js';
 import { createCart, removeLine, setLine, viewCart } from '../helpers/cart-api.js';
+import { checkOut } from '../helpers/checkout-api.js';
 import type { Cart, Problem, ProductListing } from '../helpers/api-types.js';
 
 describe('setting a cart line quantity', () => {
@@ -282,9 +283,8 @@ describe('removing a cart line', () => {
   it('rejects every change to a checked-out cart with 409 CART_ALREADY_CHECKED_OUT and leaves the cart as it was', async () => {
     const cartId = await createCart(database.app, 'alice');
     await setLine(database.app, 'alice', cartId, 'ceramic-mug', 2);
-    // Arrange: mark the cart checked out directly. Checkout itself arrives with the
-    // checkout ticket, which then exercises this path end to end.
-    await database.pool.query(`UPDATE carts SET status = 'checked_out' WHERE id = $1`, [cartId]);
+    const checkout = await checkOut(database.app, 'alice', cartId);
+    expect(checkout.status).toBe(201);
 
     const set = await setLine(database.app, 'alice', cartId, 'ceramic-mug', 5);
     const removed = await removeLine(database.app, 'alice', cartId, 'ceramic-mug');
