@@ -72,6 +72,25 @@ export async function lockEditableCart(
   return head;
 }
 
+/**
+ * Sets the quantity of a product in the cart, creating the line if needed. The
+ * quantity replaces any earlier one, so repeating the statement changes nothing.
+ * Runs only inside a transaction that already holds the cart lock.
+ */
+export async function upsertCartLine(
+  client: PoolClient,
+  cartId: string,
+  productId: string,
+  quantity: number,
+): Promise<void> {
+  await client.query(
+    `INSERT INTO cart_lines (cart_id, product_id, quantity)
+     VALUES ($1, $2, $3)
+     ON CONFLICT (cart_id, product_id) DO UPDATE SET quantity = EXCLUDED.quantity`,
+    [cartId, productId, quantity],
+  );
+}
+
 /** The cart's lines with each product's current name and unit price, in product order. */
 export async function selectCartLines(runner: SqlRunner, cartId: string): Promise<CartLineRow[]> {
   const { rows } = await runner.query<CartLineRow>(

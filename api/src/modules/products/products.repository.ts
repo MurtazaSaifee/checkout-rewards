@@ -1,4 +1,5 @@
 import type { Pool } from 'pg';
+import type { SqlRunner } from '../../db/transaction.js';
 
 export interface Product {
   id: string;
@@ -15,4 +16,15 @@ export async function listProducts(db: Pool): Promise<Product[]> {
       ORDER BY id`,
   );
   return rows;
+}
+
+/** One product's current price and stock, read without a lock. */
+export async function findProduct(runner: SqlRunner, id: string): Promise<Product | undefined> {
+  const { rows } = await runner.query<Product>(
+    `SELECT id, name, unit_price_cents AS "unitPriceCents", stock
+       FROM products
+      WHERE id = $1`,
+    [id],
+  );
+  return rows[0];
 }
