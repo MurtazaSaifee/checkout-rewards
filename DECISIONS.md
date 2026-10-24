@@ -64,3 +64,91 @@ The requirements left these questions open. Each choice is stated here and is ex
 13. **Declines.** A declined checkout places nothing, takes no stock and no order number, and leaves the cart open. The same cart can be checked out again with an approving token, and the same key works again, because a declined attempt stored nothing.
 14. **Settings.** The milestone interval and the coupon percentage are read at startup and fixed for the life of the process. Changing the interval once orders exist would move milestones that have already passed.
 15. **Products.** Prices and stock are changed in the database, where the constraints still apply. Checkout handles a price or stock change that happens while a cart is open.
+
+## Material decisions
+
+Each decision gives the context, the options weighed, the choice, the reasons and what the choice costs.
+
+### 1. The database enforces the rules that overlapping requests could break
+
+**Context.** Stock, one order per cart, one redemption per coupon, unique order numbers and one coupon per milestone must hold when requests overlap, including requests served by different API instances. A rule held only in application code is as strong as the code path that remembers it.
+
+**Options considered.** (a) Read the state, check it in application code, then write. Two requests can both pass the check, so every path needs the right lock, and one path that forgets it breaks the rule silently. (b) Serialise writes in one process. This stops at one instance and queues every write behind one lock. (c) Constraints, row locks and conditional updates in Postgres.
+
+**Choice.** (c). Application code takes the lock or writes conditionally, and a constraint backs up each rule.
+
+**Why.** The guarantee does not depend on which process runs the code. A path that omits its lock still fails at the constraint instead of breaking the rule. The stock write shows this: `UPDATE products SET stock = stock - $2 WHERE id = $1 AND stock >= $2` cannot leave stock negative even without the check that precedes it.
+
+**Consequences.** Constraint violations must be turned back into domain answers. The coupon unique violation on the order becomes `COUPON_ALREADY_REDEEMED`, and the milestone violation becomes `NO_ELIGIBLE_MILESTONE`. Rules that a constraint cannot express, such as an order's lines matching what was charged, are held by code paths. The invariants table says which are which.
+
+### 2. A checkout is one transaction, and its idempotency key is claimed inside it
+
+**Context.** A checkout writes stock, a coupon, an order number, an order, the cart status and the idempotency record. A client that times out retries, and the retry can arrive while the first attempt is still running.
+
+**Options considered.** (a) Claim the key in its own transaction first and store the result afterwards. A crash between the two leaves a claim with no result, which needs a rule for stale claims before a retry can be answered. (b) Claim the key as the first statement of the checkout transaction, so a concurrent attempt waits on the uncommitted claim. (c) No key; rely on the cart's checked-out status. This stops a second order from one cart, but it cannot return the first response to a retry, and it cannot tell a retry from a second purchase.
+
+**Choice.** (b). `INSERT ... ON CONFLICT (customer_id, idempotency_key) DO NOTHING` is the first statement, and the response is stored in the same transaction as the order.
+
+**Why.** The stored response exists exactly when the order does. A crash rolls the claim back with everything else, so no stale claim can block a retry. A refused or declined attempt also rolls back its claim, so a corrected retry is evaluated afresh.
+
+**Consequences.** The payment is charged inside the transaction, so every lock taken before the charge is held through the gateway call. A slow gateway delays other checkouts that need the same cart or products, and a retry of a slow checkout waits instead of failing. No timeout is set; the strategy section explains the gap.
+
+### 3. Carts hold no prices
+
+**Context.** A customer reads a cart and pays later. Prices can change in between, and the customer must not pay a different amount from the one they saw without being told.
+
+**Options considered.** (a) Store each price on its cart line when the line is set. The cart then holds prices that can go stale, and checkout must reconcile them with current prices. (b) Price at checkout with no guard. The customer can pay more than the total they saw, with no signal. (c) Price at checkout, and compare with the total the client saw; refuse with the current total when they differ.
+
+**Choice.** (c). Checkout prices come from one read inside its own transaction. When an expected total is sent and differs, the checkout is refused with `PRICE_CHANGED` and the current total, and nothing is placed.
+
+**Why.** The customer pays the total they were shown, or is told the total has changed. The refusal happens before the charge and changes no stock, coupon or order number. A cart has no stored price to go stale.
+
+**Consequences.** A client that sends no expected total pays the price in force during its checkout. The web app sends the subtotal when no coupon is named, the discounted total for an unredeemed coupon that it lists, and nothing otherwise. A cart shows current prices on every read.
+
+### 4. Order numbers and milestones come from one counter row
+
+**Context.** Order numbers must be unique and have no gaps, and coupon milestones depend on how many orders have been placed. Checkouts and coupon generation can all ask for the next number at once.
+
+**Options considered.** (a) A Postgres sequence. It is fast, but a value taken by a transaction that rolls back is not returned, so a failed checkout would leave a gap. (b) Count the placed orders when needed. This is correct only under a lock, and counting a growing table is slower than reading one row. (c) A counter row, incremented inside the checkout transaction and locked by coupon generation.
+
+**Choice.** (c). Checkout increments `order_counter` with `UPDATE ... RETURNING` as its last write before the order insert. Coupon generation locks the same row before it counts issued coupons and works out the milestone.
+
+**Why.** An update inside a transaction that rolls back gives its number back, so numbers have no gaps. Because generation holds the same lock while it counts, two generation calls cannot both issue a coupon for one milestone. The unique milestone constraint is the backstop if the lock were removed.
+
+**Consequences.** Every checkout writes this row, so placed orders queue on it. The wait is short, because the increment comes after the charge and is followed only by the insert and commit. The row is a throughput ceiling. An every-nth rule cannot be spread across several counters without changing what counts as the nth order; the evolution section returns to this.
+
+### 5. A coupon's owner is checked, and a foreign code is refused by name
+
+**Context.** A customer types a coupon code. The service must answer differently for an unknown code and for a real code that belongs to someone else, so that a typing mistake can be corrected. The semantics list fixes the ownership rule; this records the choice of answer.
+
+**Options considered.** (a) Answer every unknown or foreign code with 404, which reveals nothing about other customers' codes. (b) Answer a foreign code with 422 `COUPON_NOT_OWNED`, distinct from `COUPON_NOT_FOUND`. (c) Skip the ownership check and rely on the code being hard to guess.
+
+**Choice.** (b). Codes are ten characters drawn with a cryptographic random source from a 31-character alphabet, which leaves out I, L, O, 0 and 1.
+
+**Why.** A code is typed by the customer who holds it, so the two answers help that customer. The codes are long enough that guessing a real one is impractical, so the distinct answer mainly reveals the existence of a code to someone who already holds it or has guessed it.
+
+**Consequences.** A guessed code shows whether it exists. Nothing rate-limits coupon attempts, which is listed under known gaps. Other resources, such as carts and orders, answer a foreign identifier with 404 instead, because they are looked up by identifier and a code is typed by hand.
+
+### 6. Reports are computed on each request, in one read-only snapshot
+
+**Context.** The admin report and the order and coupon lists must agree. Running totals kept beside the orders can drift from the rows they summarise.
+
+**Options considered.** (a) Maintain running totals, updated by checkout and by coupon generation. Reads are cheap, but every write path must update them, and one missed path makes the report disagree. (b) Compute every figure from the rows on each request. (c) Build a separate read model asynchronously.
+
+**Choice.** (b). The report runs in one `REPEATABLE READ READ ONLY` transaction, so its figures come from one snapshot and agree with each other.
+
+**Why.** The figures come from the same rows that the lists read, so they reconcile by construction, and a reconciliation test checks this after mixed checkouts. A read-only transaction takes no row locks, so a report does not delay a checkout.
+
+**Consequences.** The cost of a report grows with the number of orders, which the evolution section covers. Nothing is stored, so the report cannot be stale.
+
+### 7. Customer identity and the admin key are placeholders behind one middleware each
+
+**Context.** Carts, orders and coupons belong to customers, and an administrator needs a view of everything. Authentication is outside what this build sets out to do.
+
+**Options considered.** (a) Sign-in with tokens. This adds machinery the scope does not need, and it would rest on an identity the service does not otherwise hold. (b) A header the client claims for the customer (`X-Customer-Id`) and a shared key for administrators (`X-Admin-Key`). (c) A fixed list of users in configuration.
+
+**Choice.** (b). The customer header is checked for format and used as the owner in every query. The admin key is compared with SHA-256 digests in constant time. Each check lives in one middleware, so real authentication replaces that middleware and no route changes.
+
+**Why.** Every owner filter works the same whatever produced the identity, and the administrator check is a single function that a reviewer can read in one place.
+
+**Consequences.** Anyone who can set the customer header acts as that customer, and anyone who holds the admin key is an administrator. The admin key is not a security control. The default `local-admin-key` is a public development value, so a deployment that keeps the defaults is not safe.
