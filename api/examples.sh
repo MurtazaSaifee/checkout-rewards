@@ -409,3 +409,35 @@ check 201 "Hana checks out at the total she saw, with the same key" \
   -X POST "${HANA[@]}" "${JSON_TYPE[@]}" -H "$(idem hana-1)" --data "{\"expectedTotalCents\":$HANA_TOTAL}" \
   "$BASE_URL/carts/$HANA_CART/checkout"
 assert_body --argjson total "$HANA_TOTAL" '.totalCents == $total'
+
+# The admin report. It is calculated from the orders and coupons on each request, so this section does not
+# assume any figure. It reads the administrator's own lists and checks that every figure in the report is the
+# sum over them. The milestone check uses the default interval of five, as the coupon section does.
+check 401 "The admin report without the admin key is refused" "$BASE_URL/admin/report"
+check 401 "The admin order list without the admin key is refused" "$BASE_URL/admin/orders"
+
+check 200 "The administrator lists every order, oldest first" "${ADMIN[@]}" "$BASE_URL/admin/orders"
+ORDERS_BODY="$LAST_BODY"
+check 200 "The administrator lists every coupon" "${ADMIN[@]}" "$BASE_URL/admin/coupons"
+COUPONS_BODY="$LAST_BODY"
+check 200 "The administrator reads the report" "${ADMIN[@]}" "$BASE_URL/admin/report"
+REPORT_BODY="$LAST_BODY"
+check 200 "Reading the report again returns the same body" "${ADMIN[@]}" "$BASE_URL/admin/report"
+if [[ "$LAST_BODY" != "$REPORT_BODY" ]]; then
+  printf 'Two reads of the report differ\n' >&2
+  exit 1
+fi
+
+# Each figure is the sum over the lists the administrator reads. Net revenue is gross revenue less discounts,
+# and the units sold of every product add up to the units on every order line.
+LAST_BODY="$REPORT_BODY"
+assert_body --argjson orders "$ORDERS_BODY" --argjson coupons "$COUPONS_BODY" '
+  .orderCount == ($orders.orders | length)
+  and .grossRevenueCents == ([$orders.orders[].subtotalCents] | add // 0)
+  and .discountCents == ([$orders.orders[].discountCents] | add // 0)
+  and .netRevenueCents == (.grossRevenueCents - .discountCents)
+  and .couponsGenerated == ($coupons.coupons | length)
+  and .couponsRedeemed == ([$coupons.coupons[] | select(.redeemedByOrderId != null)] | length)
+  and .couponsAvailable == (.couponsGenerated - .couponsRedeemed)
+  and .unrewardedMilestones == ((($orders.orders | length) / 5 | floor) - .couponsGenerated)
+  and ([.unitsSold[].quantity] | add // 0) == ([$orders.orders[].lines[].quantity] | add // 0)'
