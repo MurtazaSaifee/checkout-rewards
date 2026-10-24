@@ -383,6 +383,35 @@ paths:
           $ref: '#/components/responses/Conflict'
         '500':
           $ref: '#/components/responses/InternalError'
+  /admin/orders:
+    get:
+      tags:
+        - admin
+      operationId: listAllOrders
+      summary: List every placed order with its customer, lines and totals.
+      description: >-
+        Every customer's orders, in order-number order, so the report can be
+        checked against them. Each order carries the customer it belongs to.
+      security:
+        - adminKey: []
+      parameters:
+        - $ref: '#/components/parameters/RequestIdHeader'
+      responses:
+        '200':
+          description: Every order, oldest first.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminOrderList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
   /admin/report:
     get:
       tags:
@@ -841,6 +870,78 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/AdminCoupon'
+    AdminOrder:
+      type: object
+      description: A placed order as the administrator sees it, with the customer it belongs to.
+      required:
+        - id
+        - orderNumber
+        - customerId
+        - placedAt
+        - lines
+        - subtotalCents
+        - couponCode
+        - couponPercentOff
+        - discountCents
+        - totalCents
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+          format: uuid
+        orderNumber:
+          type: integer
+          minimum: 1
+          description: Position in the sequence of all orders placed, starting at 1 with no gaps.
+          example: 1
+        customerId:
+          type: string
+          description: The customer who placed the order.
+          example: alice
+        placedAt:
+          type: string
+          format: date-time
+        lines:
+          type: array
+          items:
+            $ref: '#/components/schemas/OrderLine'
+        subtotalCents:
+          type: integer
+          minimum: 0
+          description: Sum of the line amounts in cents.
+          example: 3350
+        couponCode:
+          type: string
+          nullable: true
+          description: The coupon the order redeemed, or null when it redeemed none.
+          example: K7HQ2XM9PA
+        couponPercentOff:
+          type: integer
+          minimum: 1
+          maximum: 100
+          nullable: true
+          description: The percentage the coupon took off the subtotal, or null when no coupon was redeemed.
+          example: 10
+        discountCents:
+          type: integer
+          minimum: 0
+          description: The coupon's percentage of the subtotal, rounded down to a whole cent. Zero when no coupon was redeemed.
+          example: 0
+        totalCents:
+          type: integer
+          minimum: 0
+          description: The amount charged, in cents. The subtotal less the discount.
+          example: 3350
+    AdminOrderList:
+      type: object
+      required:
+        - orders
+      additionalProperties: false
+      properties:
+        orders:
+          type: array
+          items:
+            $ref: '#/components/schemas/AdminOrder'
     UnitsSold:
       type: object
       required:
