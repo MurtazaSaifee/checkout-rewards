@@ -33,6 +33,17 @@ describe('error responses', () => {
     expect(body.requestId).toBe(response.headers['x-request-id']);
   });
 
+  it('answers a known path with an undocumented method with 405 Problem Details and an Allow header', async () => {
+    const response = await request(database.app).delete('/api/products');
+    const body = response.body as Problem;
+
+    expect(response.status).toBe(405);
+    expect(response.headers['content-type']).toMatch(/^application\/problem\+json/);
+    expect(response.headers.allow).toBe('GET');
+    expect(body).toMatchObject({ status: 405, code: 'METHOD_NOT_ALLOWED' });
+    expect(body.requestId).toBe(response.headers['x-request-id']);
+  });
+
   it('answers a path outside the API with 404 Problem Details rather than an HTML page', async () => {
     const response = await request(database.app).get('/no-such-page');
     const body = response.body as Problem;

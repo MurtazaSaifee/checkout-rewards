@@ -14,8 +14,10 @@ info:
     caller, 409 conflicts with current state that may succeed later, 422 well
     formed but violates a business rule.
 
-    Unknown paths and methods answer 404 `ROUTE_NOT_FOUND` as a Problem
-    Details document; that answer is not repeated per operation below.
+    An unknown path answers 404 `ROUTE_NOT_FOUND`. A known path with a method it
+    does not document answers 405 `METHOD_NOT_ALLOWED` with an `Allow` header
+    that lists the documented methods. Both answers are Problem Details
+    documents and are not repeated per operation below.
 servers:
   - url: /api
     description: API base path. Paths below are relative to it.
