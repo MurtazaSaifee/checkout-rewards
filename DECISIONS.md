@@ -225,7 +225,7 @@ Each domain error fixes its status, code and title in one place, so a status can
 | 401 | `ADMIN_KEY_INVALID` | The admin key is missing or wrong. |
 | 402 | `PAYMENT_DECLINED` | The gateway declined the payment. |
 | 404 | `CART_NOT_FOUND`, `PRODUCT_NOT_FOUND`, `ORDER_NOT_FOUND`, `ROUTE_NOT_FOUND` | No such cart, product or order is visible to the caller, and no such route exists. |
-| 405 | `METHOD_NOT_ALLOWED` | The route exists, but not for this method. |
+| 405 | `METHOD_NOT_ALLOWED` | The route exists, but not for this method. The response carries an `Allow` header that lists the methods the route accepts. |
 | 409 | `CART_ALREADY_CHECKED_OUT`, `INSUFFICIENT_STOCK`, `PRICE_CHANGED`, `NO_ELIGIBLE_MILESTONE` | The state has changed, or does not allow the action now. |
 | 413 | `PAYLOAD_TOO_LARGE` | The body is larger than the limit. |
 | 415 | `UNSUPPORTED_MEDIA_TYPE` | The body is not JSON. |
