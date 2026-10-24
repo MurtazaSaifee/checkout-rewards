@@ -18,7 +18,8 @@ export type DomainErrorCode =
   | 'CART_EMPTY'
   | 'ORDER_NOT_FOUND'
   | 'IDEMPOTENCY_KEY_REQUIRED'
-  | 'IDEMPOTENCY_KEY_REUSED';
+  | 'IDEMPOTENCY_KEY_REUSED'
+  | 'PAYMENT_DECLINED';
 
 /**
  * Every stable error code a client can receive. The ErrorCode enum in
