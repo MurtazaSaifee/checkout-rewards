@@ -1,7 +1,7 @@
-import { Pool } from 'pg';
 import { createApp } from './app.js';
 import { loadConfig } from './config.js';
 import { bootstrapDatabase } from './db/bootstrap.js';
+import { createPool } from './db/pool.js';
 import { createLogger } from './logging.js';
 import { FakePaymentGateway } from './modules/payments/fake-payment-gateway.js';
 
@@ -13,7 +13,7 @@ import { FakePaymentGateway } from './modules/payments/fake-payment-gateway.js';
 async function main(): Promise<void> {
   const config = loadConfig();
   const logger = createLogger({ level: config.logLevel });
-  const db = new Pool({ connectionString: config.databaseUrl });
+  const db = createPool(config.databaseUrl, logger);
 
   await bootstrapDatabase(db);
   logger.info('database schema and seed data are current');
