@@ -60,7 +60,10 @@ export function milestonesReached(orderCount: number, everyN: number): number {
   return Math.floor(orderCount / everyN);
 }
 
-/** Whether an order number reaches a milestone: it is a positive multiple of n. */
-export function isMilestoneOrder(orderNumber: number, everyN: number): boolean {
-  return orderNumber >= 1 && orderNumber % everyN === 0;
+/**
+ * Milestones that have been reached but not yet rewarded with a coupon: the
+ * milestones reached by the order count, less the coupons already issued.
+ */
+export function unrewardedMilestones(orderCount: number, couponsIssued: number, everyN: number): number {
+  return milestonesReached(orderCount, everyN) - couponsIssued;
 }

@@ -1,7 +1,7 @@
 import type { Pool, PoolClient } from 'pg';
 import type { CouponRules } from '../../config.js';
 import { withTransaction } from '../../db/transaction.js';
-import { milestonesReached } from '../pricing/pricing.js';
+import { unrewardedMilestones } from '../pricing/pricing.js';
 import { newCouponCode } from './coupon.codes.js';
 import {
   CouponAlreadyRedeemedError,
@@ -46,11 +46,11 @@ export interface GeneratedCouponView {
 export async function generateCoupon(db: Pool, rules: CouponRules): Promise<GeneratedCouponView> {
   return withTransaction(db, async (client) => {
     const orderCount = await lockOrderCount(client);
-    const reached = milestonesReached(orderCount, rules.everyNOrders);
-    const milestone = (await countIssuedCoupons(client)) + 1;
-    if (milestone > reached) {
+    const issued = await countIssuedCoupons(client);
+    if (unrewardedMilestones(orderCount, issued, rules.everyNOrders) < 1) {
       throw new NoEligibleMilestoneError();
     }
+    const milestone = issued + 1;
 
     const milestoneOrderNumber = milestone * rules.everyNOrders;
     const customerId = await findCustomerOfOrder(client, milestoneOrderNumber);
@@ -72,7 +72,7 @@ export async function generateCoupon(db: Pool, rules: CouponRules): Promise<Gene
     return {
       coupon: { code, percentOff: rules.percentOff, milestone, redeemed: false },
       customerId,
-      unrewardedMilestonesRemaining: reached - milestone,
+      unrewardedMilestonesRemaining: unrewardedMilestones(orderCount, milestone, rules.everyNOrders),
     };
   });
 }
