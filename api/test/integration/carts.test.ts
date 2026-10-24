@@ -15,8 +15,9 @@ describe('POST /api/carts', () => {
     const cart = response.body as Cart;
 
     expect(response.status).toBe(201);
+    expect(cart.id).toMatch(UUID);
     expect(cart).toEqual({
-      id: expect.stringMatching(UUID),
+      id: cart.id,
       status: 'open',
       lines: [],
       lineCount: 0,
