@@ -17,6 +17,24 @@ export class IdempotencyKeyReusedError extends DomainError {
 }
 
 /**
+ * The total at current prices is not the total the customer was shown. Thrown
+ * before the charge, inside the checkout transaction, so nothing is placed and
+ * the stock taken so far rolls back with it. The current total is returned so
+ * the customer can review it and check out again.
+ */
+export class PriceChangedError extends DomainError {
+  constructor(currentTotalCents: number) {
+    super({
+      status: 409,
+      code: 'PRICE_CHANGED',
+      title: 'Price changed',
+      detail: 'The total at current prices differs from the expected total, so nothing was placed.',
+      extensions: { currentTotalCents },
+    });
+  }
+}
+
+/**
  * The payment gateway declined the charge. Thrown inside the checkout
  * transaction, so the stock taken so far and the claimed key roll back with it.
  */

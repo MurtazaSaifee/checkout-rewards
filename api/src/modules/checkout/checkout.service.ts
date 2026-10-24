@@ -12,7 +12,7 @@ import { findProduct, takeStock } from '../products/products.repository.js';
 import { type OrderView, loadOrderView } from '../orders/orders.repository.js';
 import { type PaymentGateway } from '../payments/payment-gateway.js';
 import { type CheckoutOptions } from './checkout.options.js';
-import { IdempotencyKeyReusedError, PaymentDeclinedError } from './checkout.errors.js';
+import { IdempotencyKeyReusedError, PaymentDeclinedError, PriceChangedError } from './checkout.errors.js';
 import {
   claimIdempotencyKey,
   storeIdempotentResponse,
@@ -77,8 +77,7 @@ export async function checkOut(
     }
 
     // Step 3: price the lines at current prices. Prices are read in this
-    // transaction, and the order keeps exactly what was read. There is no
-    // discount yet, so the total is the subtotal.
+    // transaction, and the order keeps exactly what was read.
     const subtotal = subtotalCents(lines);
 
     // Step 4: take stock, one conditional update per line, in product order. The
@@ -97,13 +96,25 @@ export async function checkOut(
       throw new InsufficientStockError(shortLines);
     }
 
+    // Step 5: the coupon discount. There is none yet, so the final total is the
+    // subtotal. A discount lowers this figure before the price guard below reads it.
+    const total = subtotal;
+
+    // The price guard sits after the discount, because the expected total is the
+    // total the customer saw, which is the discounted one when a coupon applies. It
+    // sits before the charge, so a changed price is never charged. A refusal throws
+    // here, and the rollback returns the stock taken above and frees the claimed key.
+    if (input.options.expectedTotalCents !== undefined && input.options.expectedTotalCents !== total) {
+      throw new PriceChangedError(total);
+    }
+
     // Step 6: charge the total through the payment gateway, inside the transaction.
     // A decline throws, so the stock taken above and the claimed key roll back with
     // it. Nothing has been placed yet, so a retry with another token starts clean.
     // This holds only because the gateway is in-process: a real provider's charge
     // cannot be undone by a rollback.
     const charge = await payments.charge({
-      amountCents: subtotal,
+      amountCents: total,
       paymentToken: input.options.paymentToken,
     });
     if (charge === 'declined') {
@@ -120,7 +131,7 @@ export async function checkOut(
       customerId: input.customerId,
       cartId: cart.id,
       subtotalCents: subtotal,
-      totalCents: subtotal,
+      totalCents: total,
     });
     await insertOrderLines(client, orderId, lines);
     await markCartCheckedOut(client, cart.id);
