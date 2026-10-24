@@ -2,3 +2,9 @@
 CLAUDE.md
 GLOSSARY.md
 docs/
+
+node_modules/
+dist/
+*.tsbuildinfo
+web/src/api/schema.gen.ts
+.claude/

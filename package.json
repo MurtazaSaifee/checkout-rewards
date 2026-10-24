@@ -1,0 +1,18 @@
+{
+  "name": "checkout-rewards",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Reliable checkout and rewards service: API and testing frontend",
+  "workspaces": [
+    "api",
+    "web"
+  ],
+  "engines": {
+    "node": ">=22.12"
+  },
+  "scripts": {
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "lint": "npm run lint --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present"
+  }
+}
