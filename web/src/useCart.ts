@@ -4,6 +4,7 @@ import {
   checkOutCart,
   createCart,
   getCart,
+  newIdempotencyKey,
   type Order,
   removeCartLine,
   setCartLineQuantity,
@@ -128,7 +129,8 @@ export function useCart(customer: CustomerId, options: CartOptions): CartControl
     const cartId = state.cart.id;
     setEditError(undefined);
     setCheckoutError(undefined);
-    checkOutCart(customer, cartId).then(
+    // Each click is a new attempt, so it gets a new key.
+    checkOutCart(customer, cartId, newIdempotencyKey()).then(
       (order) => {
         onOrderPlaced(order);
         // The cart is checked out now. Read it back, so the panel shows the server's state.
