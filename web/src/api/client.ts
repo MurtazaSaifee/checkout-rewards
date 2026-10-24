@@ -4,6 +4,8 @@ import type { components } from './schema.gen';
 export type Product = components['schemas']['Product'];
 export type ProductList = components['schemas']['ProductList'];
 export type Problem = components['schemas']['Problem'];
+export type Cart = components['schemas']['Cart'];
+export type CartLine = components['schemas']['CartLine'];
 
 /** Thrown for any non-2xx answer. Keeps the full body so the UI can show it raw. */
 export class ApiError extends Error {
@@ -29,6 +31,55 @@ export async function listProducts(signal?: AbortSignal): Promise<ProductList> {
     signal,
   });
   return readJson<ProductList>(response);
+}
+
+/** Every cart request names the calling customer. The identifier is claimed, not verified. */
+function customerHeaders(customerId: string): Record<string, string> {
+  return { Accept: 'application/json', 'X-Customer-Id': customerId };
+}
+
+export async function createCart(customerId: string, signal?: AbortSignal): Promise<Cart> {
+  const response = await fetch(`${API_BASE}/carts`, {
+    method: 'POST',
+    headers: customerHeaders(customerId),
+    signal,
+  });
+  return readJson<Cart>(response);
+}
+
+export async function getCart(customerId: string, cartId: string, signal?: AbortSignal): Promise<Cart> {
+  const response = await fetch(`${API_BASE}/carts/${cartId}`, {
+    headers: customerHeaders(customerId),
+    signal,
+  });
+  return readJson<Cart>(response);
+}
+
+/** Sets the quantity, replacing any earlier one. Sent as typed, so the server's answer to bad input is shown. */
+export async function setCartLineQuantity(
+  customerId: string,
+  cartId: string,
+  productId: string,
+  quantity: number,
+): Promise<Cart> {
+  const response = await fetch(`${API_BASE}/carts/${cartId}/lines/${productId}`, {
+    method: 'PUT',
+    headers: { ...customerHeaders(customerId), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ quantity }),
+  });
+  return readJson<Cart>(response);
+}
+
+export async function removeCartLine(
+  customerId: string,
+  cartId: string,
+  productId: string,
+): Promise<Cart> {
+  const response = await fetch(`${API_BASE}/carts/${cartId}/lines/${productId}`, {
+    method: 'DELETE',
+    headers: customerHeaders(customerId),
+  });
+  return readJson<Cart>(response);
 }
 
 async function readJson<T>(response: Response): Promise<T> {
