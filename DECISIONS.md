@@ -172,3 +172,66 @@ The header is claimed, not verified: any caller can send any identifier. The rul
 **Why:** A row lock is simple to read, and it is held only for the short duration of one change. A version number would make clients retry on every collision. Serialisable isolation makes Postgres abort some transactions, and each abort needs a retry. Locking the cart row serialises changes to one cart and leaves every other cart alone. The lock is held by the database, so it holds however many API instances connect.
 
 **Consequences:** Changes to the same cart wait for each other, so a slow change delays the rest. Changes to different carts never wait. Every operation that changes a cart must take the same lock, and a single helper takes it and checks that the cart is still open, so the cart changes and checkout share one definition of an editable cart.
+
+## Decision: Checkout is one transaction
+
+**Context:** A checkout changes several rows: the cart, the stock of each product, the order counter, and the new order with its lines. A failure part way through must not leave some of those changes in place and others out, such as stock taken for an order that was never recorded.
+
+**Options considered:**
+
+1. Run each step as its own statement, and undo the completed steps when a later one fails.
+2. Record the order as pending first, confirm it in a later step, and clear abandoned pending orders with a background job.
+3. Run every step inside one database transaction, which Postgres commits or rolls back as a unit.
+
+**Choice:** Option 3. Checkout locks the cart row with the same lock cart edits take, checks that the cart is open and not empty, prices the lines at current prices, takes the stock, takes the next order number, inserts the order and its lines, and marks the cart checked out. The transaction commits only when every step has succeeded.
+
+**Why:** Rollback is a guarantee the database already gives, so no step needs its own undo logic. Hand-written undo steps are where partial failures go wrong. A pending state needs a clean-up job and a rule for what customers see while an order is pending. Checks that refuse a cart are run before any stock is touched, so the common refusals change nothing.
+
+**Consequences:** The transaction holds row locks from its first statement until it commits, so nothing inside it may call another service, which would hold those locks for the length of the call. A cart edit that races a checkout either lands first and is part of the order, or waits and is refused with `CART_ALREADY_CHECKED_OUT`. No order can contain a line the cart did not hold when it was checked out.
+
+## Decision: Stock is taken with one conditional update per line
+
+**Context:** Many checkouts can want the same product at once. A checkout that reads the stock, decides there is enough and then writes the reduced level can be overtaken by another checkout that does the same between the read and the write. Both could then take the last units.
+
+**Options considered:**
+
+1. Read the stock level, check it in application code, then write the reduced level.
+2. Lock each product row with `SELECT ... FOR UPDATE`, then check and write under the lock.
+3. Decrement with one conditional statement per line, `UPDATE products SET stock = stock - $2 WHERE id = $1 AND stock >= $2`, and treat a statement that changes no row as a shortage.
+
+**Choice:** Option 3. Checkout issues one conditional update per line, in ascending product identifier order. A line whose update changes no row is short. Checkout does not stop at the first short line. It tries every line, collects each short line with the quantity requested and the quantity available, and then fails the whole checkout. The rollback returns the stock that the earlier lines took.
+
+**Why:** The check and the change are one statement, so no other transaction can act between them. Option 2 is also correct, but it holds the lock across more work and needs a separate read and write. Taking lines in one fixed order means two checkouts that want the same products queue in the same order, which avoids deadlocks. Reporting every short line lets the customer fix the whole cart in one visit instead of discovering the shortages one at a time.
+
+**Consequences:** A refused checkout reads the available quantity for each short line, which is cheap at this scale. The rule is only as strong as the statement that carries it, so the `WHERE stock >= $2` clause is where a reviewer must look. The `CHECK (stock >= 0)` constraint on the column is the backstop: if that clause were ever lost, the update would fail instead of overselling.
+
+## Decision: Order numbers come from a counter row taken last
+
+**Context:** Customers and staff refer to orders by number, so the numbers should run 1, 2, 3 with no gaps. A checkout that fails must not consume a number. The number must be assigned inside the checkout transaction, so it always belongs to the order that is actually stored.
+
+**Options considered:**
+
+1. A Postgres sequence.
+2. The highest existing number plus one, read in the same statement that inserts the order.
+3. A single counter row, incremented inside the transaction as its last write before the order insert.
+
+**Choice:** Option 3. The counter is one row holding the last number issued. Checkout increments it with `UPDATE ... RETURNING` as the last write before the order insert, so the row stays locked until the checkout commits or rolls back.
+
+**Why:** A sequence never rolls back, so a checkout that fails after drawing a number leaves a gap. Option 2 is racy, because two checkouts can read the same highest number. A counter row incremented inside the transaction rolls back with it, so a failed checkout gives its number back. Taking the number last keeps the lock on the row as short as possible.
+
+**Consequences:** Every checkout that reaches the counter waits for the checkouts ahead of it to commit. That queue is deliberate, and it is why the counter is updated as late as possible. Because the lock lasts until commit, numbers become visible in the order they were issued: a customer never sees order 6 before order 5 exists. The numbers have no gaps while orders are never deleted, which the service does not do.
+
+## Decision: Orders store a snapshot of their lines
+
+**Context:** An order records what the customer agreed to pay. Products can be renamed or repriced later, and an order that read those values from the products table would change with them.
+
+**Options considered:**
+
+1. Store only the product identifier on each order line, and join to the products table to show the name and price.
+2. Copy the product name, unit price, quantity and line amount into each order line when the order is placed, and store the subtotal and total with the order.
+
+**Choice:** Option 2. Each order line keeps its product identifier together with the name, unit price, quantity and line amount, and the order keeps its subtotal and total. Reading an order returns these stored values and never recalculates them.
+
+**Why:** A join would show a past order with today's name and price, which is wrong for a record of a payment. Copying the figures costs a little storage and removes the dependency between an order and the catalogue. Storing the totals rather than recomputing them means the order keeps the figures the customer saw at checkout.
+
+**Consequences:** The same name and price appear in many rows, which is intended. A price or name change affects carts from then on and leaves placed orders as they were. The product identifier is kept so a line can still be traced to its product, but it is not used to produce any figure shown on an order.
