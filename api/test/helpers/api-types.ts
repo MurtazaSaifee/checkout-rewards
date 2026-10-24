@@ -31,6 +31,25 @@ export interface Cart {
   subtotalCents: number;
 }
 
+/** A line as an order records it: the name and price as they were at checkout. */
+export interface OrderLine {
+  productId: string;
+  name: string;
+  unitPriceCents: number;
+  quantity: number;
+  lineAmountCents: number;
+}
+
+/** The order a successful checkout places, and the shape of each order a customer views. */
+export interface Order {
+  id: string;
+  orderNumber: number;
+  placedAt: string;
+  lines: OrderLine[];
+  subtotalCents: number;
+  totalCents: number;
+}
+
 /** The short lines an INSUFFICIENT_STOCK error lists, as the contract describes them. */
 export interface ShortLine {
   productId: string;

@@ -3,6 +3,7 @@ import request from 'supertest';
 import { describe, expect, it } from 'vitest';
 import { createLogger } from '../../src/logging.js';
 import { useTestDatabase } from '../helpers/test-database.js';
+import { createCart, setLine } from '../helpers/cart-api.js';
 
 /** Captures each log line the service writes, parsed as JSON. */
 function captureLogs(): { entries: Array<Record<string, unknown>>; destination: Writable } {
@@ -54,6 +55,37 @@ describe('structured request logging', () => {
         path: '/api/products',
         status: 200,
       }),
+    );
+  });
+});
+
+describe('checkout outcome logging', () => {
+  const logs = captureLogs();
+  const database = useTestDatabase({
+    logger: createLogger({ level: 'info', destination: logs.destination }),
+  });
+
+  it('logs a placed checkout once, with its order number, and a refused checkout once, with its code', async () => {
+    const cartId = await createCart(database.app, 'alice');
+    await setLine(database.app, 'alice', cartId, 'ceramic-mug', 1);
+    await request(database.app)
+      .post(`/api/carts/${cartId}/checkout`)
+      .set('X-Customer-Id', 'alice')
+      .set('X-Request-Id', 'outcome-placed-1');
+
+    const emptyCartId = await createCart(database.app, 'bob');
+    await request(database.app)
+      .post(`/api/carts/${emptyCartId}/checkout`)
+      .set('X-Customer-Id', 'bob')
+      .set('X-Request-Id', 'outcome-refused-1');
+
+    const placed = logs.entries.filter((entry) => entry.requestId === 'outcome-placed-1');
+    const refused = logs.entries.filter((entry) => entry.requestId === 'outcome-refused-1');
+    expect(placed.filter((entry) => entry.msg === 'checkout placed')).toEqual([
+      expect.objectContaining({ orderNumber: 1 }),
+    ]);
+    expect(refused).toContainEqual(
+      expect.objectContaining({ msg: 'request rejected', code: 'CART_EMPTY', status: 422 }),
     );
   });
 });
