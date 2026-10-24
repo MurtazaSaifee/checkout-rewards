@@ -261,13 +261,12 @@ Each checkout writes one outcome line: `ORDER_PLACED`, `IDEMPOTENT_REPLAY`, or t
 
 **Known gaps.** These are real defects or weaknesses in the current code. Each is listed here until it is fixed, and then removed.
 
-- The connection pool has no `error` listener, so an error on an idle connection is unhandled and can stop the process.
-- The examples script prints the admin key in the commands it shows. The key is the public development default, but the habit is wrong.
-- The contract validator is loaded on the first request, so a problem in the contract appears at that request rather than at startup.
+- The contract validator loads `api/openapi.yaml` on the first request, so a problem in the contract appears at that request rather than at startup. The library exposes no supported way to wait for the load before the server listens, so the check is not moved to startup.
 - Amount columns are 32-bit integers, so an amount above 2,147,483,647 cents is reported as `INTERNAL_ERROR` rather than as a domain error.
 - Idempotency records are never deleted, so the table grows with every checkout.
 - There are no statement or lock timeouts. A slow checkout holds its rows until it ends.
 - Coupon attempts are not rate-limited, so the coupon answers can be probed freely.
+- Coupon generation takes the next milestone to be the number of coupons issued plus one. That assumes generation is the only writer of coupons, so a coupon inserted directly into the database at a later milestone would stop generation.
 
 ## Beyond one instance
 
