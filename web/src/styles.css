@@ -102,6 +102,12 @@ input[type='number'] {
   padding: 0.25rem 0.4rem;
 }
 
+input[type='password'] {
+  width: 16rem;
+  font: inherit;
+  padding: 0.25rem 0.4rem;
+}
+
 select {
   font: inherit;
   padding: 0.25rem 0.4rem;
