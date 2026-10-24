@@ -7,10 +7,10 @@ import type { Order } from './api-types.js';
 /** Thin wrappers over the checkout and order endpoints. Each returns the raw response so tests can assert on it. */
 
 /**
- * The one place tests check a cart out. Every checkout in the suite goes through
- * here, so a change to the checkout request (for example a required header) is
- * made once. Each call sends a fresh idempotency key unless the test passes one.
- * The body carries only the options the test passes, so the default request has no body.
+ * The usual way tests check a cart out, so the headers a checkout needs are set in
+ * one place. A few tests post to the checkout route directly. Each call sends a
+ * fresh idempotency key unless the test passes one. The body carries only the
+ * options the test passes, so the default request has no body.
  */
 export function checkOut(
   app: Express,

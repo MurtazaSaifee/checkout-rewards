@@ -76,18 +76,15 @@ export async function checkOut(
     // Step 2: lock the cart with the lock every cart edit takes. A missing or
     // foreign cart and a checked-out cart are rejected here. An edit that raced
     // us either committed before this read, so it is in the order, or waits and
-    // is then rejected as checked out.
+    // is then rejected as checked out. The lines and their current prices are read
+    // here too, and the order keeps exactly what was read.
     const cart = await lockEditableCart(client, input.cartId, input.customerId);
     const lines = await selectCartLines(client, cart.id);
     if (lines.length === 0) {
       throw new CartEmptyError();
     }
 
-    // Step 3: the lines carry current prices, read in this transaction, and the
-    // order keeps exactly what was read. The amounts are worked out once the
-    // coupon is known, at step 5.
-
-    // Step 4: take stock, one conditional update per line, in product order. The
+    // Step 3: take stock, one conditional update per line, in product order. The
     // lines come back ordered by product, so concurrent checkouts lock products
     // in the same sequence and cannot deadlock on each other. Every line is
     // tried even after one is short, so the error lists them all. Nothing is
@@ -103,10 +100,10 @@ export async function checkOut(
       throw new InsufficientStockError(shortLines);
     }
 
-    // Step 5: redeem the coupon, if one was named. Its row is locked until this
+    // Step 4: redeem the coupon, if one was named. Its row is locked until this
     // transaction ends, so a concurrent checkout that names it waits here and then
     // sees the redemption. Nothing is recorded yet. The redemption is written at
-    // step 8, with the order, so a checkout that fails before then leaves the
+    // step 7, with the order, so a checkout that fails before then leaves the
     // coupon unredeemed. The discount is taken once, on the subtotal.
     const coupon =
       input.options.couponCode === undefined
@@ -122,7 +119,7 @@ export async function checkOut(
       throw new PriceChangedError(amounts.totalCents);
     }
 
-    // Step 6: charge the total through the payment gateway, inside the transaction.
+    // Step 5: charge the total through the payment gateway, inside the transaction.
     // A decline throws, so the stock taken above, the coupon and the claimed key
     // roll back with it. Nothing has been placed yet, so a retry with another token
     // starts clean. This holds only because the gateway is in-process: a real
@@ -135,11 +132,11 @@ export async function checkOut(
       throw new PaymentDeclinedError();
     }
 
-    // Step 7: take the order number. This is the last write before the order
+    // Step 6: take the order number. This is the last write before the order
     // insert, so a checkout that fails above never takes a number.
     const orderNumber = await takeNextOrderNumber(client);
 
-    // Step 8: record the order, its lines, the coupon's redemption and the cart's
+    // Step 7: record the order, its lines, the coupon's redemption and the cart's
     // checkout. The unique constraint on the order's coupon code refuses a second
     // order for the coupon. The row lock above normally stops that from happening,
     // so the constraint is the backstop that keeps the rule true without the lock.
@@ -166,7 +163,7 @@ export async function checkOut(
     await insertOrderLines(client, orderId, lines);
     await markCartCheckedOut(client, cart.id);
 
-    // Step 9: store the response against the key, then commit. The stored text is
+    // Step 8: store the response against the key, then commit. The stored text is
     // the exact body the client receives, so a replay is byte-for-byte the same.
     const order = await loadOrderView(client, orderId);
     await storeIdempotentResponse(client, input.customerId, input.idempotencyKey, {

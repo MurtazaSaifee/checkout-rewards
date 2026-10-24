@@ -27,7 +27,7 @@ interface Described {
 }
 
 /** Titles for errors raised outside the domain (contract, parser, router). */
-const GENERIC_TITLES: Record<HttpErrorCode, string> = {
+export const GENERIC_TITLES: Record<HttpErrorCode, string> = {
   VALIDATION_FAILED: 'Request validation failed',
   MALFORMED_JSON: 'Malformed JSON',
   ROUTE_NOT_FOUND: 'Route not found',
