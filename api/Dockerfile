@@ -1,6 +1,6 @@
 # Build context is the repository root, because npm workspaces resolve from there.
 
-FROM node:24-alpine AS build
+FROM node:24.22.1-alpine AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
 COPY api/package.json api/
@@ -9,7 +9,7 @@ RUN npm ci --workspace api
 COPY api api
 RUN npm run build --workspace api
 
-FROM node:24-alpine AS runtime
+FROM node:24.22.1-alpine AS runtime
 ENV NODE_ENV=production
 WORKDIR /app
 COPY package.json package-lock.json ./
