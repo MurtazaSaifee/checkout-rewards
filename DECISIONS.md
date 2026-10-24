@@ -283,3 +283,21 @@ Today every API instance connects to one Postgres database, and no rule depends 
 - **Timeouts.** Set a statement timeout and a lock timeout on each session, so one stuck call cannot hold rows indefinitely.
 - **Idempotency retention.** Keep each key for longer than any client's retry window, then delete keys in a batch. Deleting too early would let a late retry place a second order.
 - **Shared configuration.** Every instance must run with the same `ADMIN_KEY`, `COUPON_EVERY_N_ORDERS` and `COUPON_PERCENT_OFF`. Settings live in each process, not in the database, so an instance with a different interval would issue coupons at different milestones without any error.
+
+## How AI tools were used
+
+An AI coding assistant helped with planning, implementation and review. The author set the scope, reviewed each change before it was merged, and decided what to keep. Each branch was built in its own git worktree and reviewed, through its diff and its tests, before it was merged. The examples below are places where the review changed the result.
+
+1. **Scope.** The first proposal treated the frontend as optional. The author rejected that, and made the frontend a required testing aid, with the race scenarios among its tools.
+2. **Scope.** Endpoints for changing products were not added. A documented database statement changes prices and stock, which keeps the work on checkout correctness.
+3. **Conflicts.** Two parallel branches each created migration `0004`. Review caught it, and the coupons migration was renumbered `0005` before the merge.
+4. **Observability.** The first checkout implementation logged successes without an outcome code, and left refusals to the generic error log. It was changed to one outcome line per checkout, carrying its code.
+5. **Concurrency.** A lost race in coupon generation surfaced as a 500. It was changed to 409 `NO_ELIGIBLE_MILESTONE`, and a test forces the unique constraint to reject an insert.
+6. **Attribution.** Commit attribution was wrong until a review flagged it. It was corrected.
+7. **Repository history.** A history rewrite meant to remove material that should not be public also deleted working files. They were restored from a backup bundle taken beforehand. Back up before any rewrite, and check the working tree afterwards.
+
+## What to examine first with two more hours
+
+1. **Interleavings.** Hold a coupon or cart row lock from a test connection, let a checkout wait on it, release the lock, and check that the waiter re-reads the committed state. The current tests sample overlap with `Promise.all`, which makes overlap likely but does not choose the order. This test would check the READ COMMITTED reasoning directly.
+2. **Two-phase payment.** The charge runs while the cart and stock locks are held. Separating the pending order from the payment removes that, and it is the change with the largest effect on throughput.
+3. **The known gaps.** Start with the missing pool error listener, and with the 32-bit amount columns, which can answer a valid request with a 500.
