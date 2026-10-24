@@ -1,6 +1,7 @@
 import type { Pool, PoolClient } from 'pg';
 import { withTransaction } from '../../db/transaction.js';
 import { type ShortLine, CartEmptyError, InsufficientStockError } from '../carts/cart.errors.js';
+import { isUniqueViolation } from '../../db/unique-violation.js';
 import {
   type CartLineRow,
   lockEditableCart,
@@ -40,20 +41,8 @@ export interface CheckoutOutcome {
 
 const PLACED_STATUS = 201;
 
-/** Postgres's unique violation, and the name of the constraint that lets each coupon appear on one order only. */
-const UNIQUE_VIOLATION = '23505';
+/** The unique constraint that lets each coupon appear on one order only. */
 const ORDER_COUPON_CONSTRAINT = 'orders_coupon_code_key';
-
-/** True only for the one-order-per-coupon constraint, so any other failure still surfaces as an error. */
-function isCouponAlreadyOrdered(error: unknown): boolean {
-  return (
-    error instanceof Error &&
-    'code' in error &&
-    error.code === UNIQUE_VIOLATION &&
-    'constraint' in error &&
-    error.constraint === ORDER_COUPON_CONSTRAINT
-  );
-}
 
 /**
  * Checks out a cart. The whole checkout is one transaction, so it either places
@@ -166,7 +155,7 @@ export async function checkOut(
         totalCents: amounts.totalCents,
       });
     } catch (error) {
-      if (coupon !== undefined && isCouponAlreadyOrdered(error)) {
+      if (coupon !== undefined && isUniqueViolation(error, ORDER_COUPON_CONSTRAINT)) {
         throw new CouponAlreadyRedeemedError();
       }
       throw error;

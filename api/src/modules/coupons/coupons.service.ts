@@ -20,21 +20,10 @@ import {
   lockCouponByCode,
   lockOrderCount,
 } from './coupons.repository.js';
+import { isUniqueViolation } from '../../db/unique-violation.js';
 
-/** Postgres's unique violation, and the name it gives the unique constraint on the milestone column. */
-const UNIQUE_VIOLATION = '23505';
+/** The unique constraint on the milestone column: one coupon per milestone. */
 const MILESTONE_CONSTRAINT = 'coupons_milestone_key';
-
-/** True only for the milestone constraint, so any other failure still surfaces as an error. */
-function isMilestoneAlreadyRewarded(error: unknown): boolean {
-  return (
-    error instanceof Error &&
-    'code' in error &&
-    error.code === UNIQUE_VIOLATION &&
-    'constraint' in error &&
-    error.constraint === MILESTONE_CONSTRAINT
-  );
-}
 
 /** The answer to generating a coupon: the coupon, the customer it went to, and what is still owed. */
 export interface GeneratedCouponView {
@@ -74,7 +63,7 @@ export async function generateCoupon(db: Pool, rules: CouponRules): Promise<Gene
       await insertCoupon(client, { code, milestone, customerId, percentOff: rules.percentOff });
     } catch (error) {
       // Another call rewarded this milestone first, so the constraint refused the insert.
-      if (isMilestoneAlreadyRewarded(error)) {
+      if (isUniqueViolation(error, MILESTONE_CONSTRAINT)) {
         throw new NoEligibleMilestoneError();
       }
       throw error;
