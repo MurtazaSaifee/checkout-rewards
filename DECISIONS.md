@@ -245,7 +245,7 @@ Each checkout writes one outcome line: `ORDER_PLACED`, `IDEMPOTENT_REPLAY`, or t
 
 ## What is built, what is deferred, and known gaps
 
-**Built.** Products are listed. A customer can set and remove cart lines, read a cart, and check it out with an idempotency key. Orders and coupons are listed per customer, and an administrator can generate coupons, list coupons and orders, and read the report. Checkout pays through an in-process gateway that approves `tok_ok` and declines `tok_decline`. The web app covers a customer's cart, checkout, orders and coupons, and an administration panel. Compose runs the database, the API and the web app together. The tests are HTTP tests against real Postgres, plus unit tests for the pricing module.
+**Built.** Products are listed. A customer can set and remove cart lines, read a cart, and check it out with an idempotency key. Orders and coupons are listed per customer, and an administrator can generate coupons, list coupons and orders, and read the report. Checkout pays through an in-process gateway that approves `tok_ok` and declines `tok_decline`. The web app covers a customer's cart, checkout, orders and coupons, and an administration panel. Compose runs the database, the API and the web app together. The tests are HTTP tests against real Postgres, plus unit tests for the pricing module, for configuration parsing in the API and the load script, for the transaction helper, and for the load script's plan, reconciliation and run summary.
 
 **Deferred on purpose.** These were left out of the scope:
 
