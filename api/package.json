@@ -14,7 +14,8 @@
     "lint": "eslint .",
     "test": "npm run test:unit && npm run test:integration",
     "test:unit": "vitest run --project unit",
-    "test:integration": "vitest run --project integration"
+    "test:integration": "vitest run --project integration",
+    "perf:checkout": "tsx perf/checkout-throughput.ts"
   },
   "dependencies": {
     "express": "5.3.0",
@@ -24,10 +25,12 @@
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",
+    "@types/autocannon": "7.12.7",
     "@types/express": "5.0.6",
     "@types/node": "24.19.2",
     "@types/pg": "8.23.1",
     "@types/supertest": "7.2.1",
+    "autocannon": "8.0.0",
     "eslint": "10.13.0",
     "globals": "17.13.0",
     "supertest": "7.3.1",

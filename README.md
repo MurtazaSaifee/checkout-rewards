@@ -207,6 +207,31 @@ Errors are RFC 9457 Problem Details (`application/problem+json`). Each carries a
 
 Logs are one JSON object per line. Every line written for a request carries that request's `requestId`.
 
+## Checkout throughput
+
+`api/perf/checkout-throughput.ts` measures checkout throughput and latency with [autocannon](https://github.com/mcollina/autocannon). It is not part of `npm test` or CI, and it runs against an API that is already running. Each run takes stock, so start the API on an empty database that you drop afterwards:
+
+```sh
+createdb perf_scratch
+DATABASE_URL=postgres://postgres:postgres@localhost:5432/perf_scratch npm run dev -w api
+BASE_URL=http://localhost:3000/api ADMIN_KEY=local-admin-key npm run perf:checkout -w api
+```
+
+The script creates the carts through the API, then fires one checkout per cart with a unique `Idempotency-Key`. It runs two scenarios:
+
+- **A:** a checkout for every unit of ample stock (every product except `limited-hoodie`), spread across the products.
+- **B:** `CONTENDED_CHECKOUTS` checkouts (default 100), all for `limited-hoodie`, of which the seeded store holds three.
+
+Its settings are `BASE_URL`, `ADMIN_KEY`, `CONNECTIONS` (default 20), `SPREAD_CHECKOUTS` (default: all the ample stock) and `CONTENDED_CHECKOUTS`. After each scenario it reads the store back through the API and checks that stock is never negative, that every expected checkout was placed, that stock fell by exactly the units on the placed orders, and that the admin report moved by exactly those orders (orders, gross, discounts, net and units sold), with net equal to gross less discounts. It also checks that no response was a 5xx. The script exits non-zero when a check fails. A second run on the same database finds less stock, and once `limited-hoodie` is sold out the script skips scenario B.
+
+One run, with the defaults:
+
+- **Machine:** a developer laptop (Apple M2 Pro, 10 cores, 16 GB RAM), with Node 25.9, Postgres 18.3 on localhost and the API at its default configuration, including the default connection pool. The numbers are indicative, not a benchmark.
+- **Scenario A:** 235 checkouts, 20 connections. Every checkout returned 201 in a run that lasted 0.28 s, at about 839 requests per second. Latency was p50 17.0 ms, p90 39.0 ms, p99 67.0 ms, max 72.0 ms.
+- **Scenario B:** 100 checkouts, 20 connections. 3 returned 201 and 97 returned 409 `INSUFFICIENT_STOCK`, in a run that lasted 0.04 s, at about 2,500 requests per second. Latency was p50 5.0 ms, p90 10.0 ms, p99 13.0 ms, max 14.0 ms.
+
+Latency covers every response, including the 409s. Both runs are short, so the requests per second figures are only a rough guide. Every check passed in both scenarios.
+
 ## Layout
 
 - `api/` is the Express 5 service. `src/` holds the application factory, the HTTP layer (request context, contract validation, Problem Details mapping), feature modules and the database code. `migrations/` holds plain SQL files. `test/` holds the unit and integration tests. `openapi.yaml` is the contract and `examples.sh` the executable examples.
