@@ -1,19 +1,13 @@
 import { useState } from 'react';
-import { ApiError, checkOutCart, createCart, type Order, setCartLineQuantity } from './api/client';
+import { checkOutCart, createCart, newIdempotencyKey, setCartLineQuantity } from './api/client';
 import type { CustomerId } from './customer';
+import { countLabels, type Outcome, placed, refusal } from './outcomes';
 
 /** The product seeded with three units, so a race over it has winners and losers. */
 const SCARCE_PRODUCT = 'limited-hoodie';
 const MIN_CHECKOUTS = 2;
 const MAX_CHECKOUTS = 50;
 const DEFAULT_CHECKOUTS = 8;
-
-/** What one request came to: a result to count, and the full detail to show. */
-interface Outcome {
-  placed: boolean;
-  label: string;
-  detail: string;
-}
 
 interface RaceResult {
   checkouts: number;
@@ -43,7 +37,10 @@ export function RaceTool({ customer, onFinished }: { customer: CustomerId; onFin
     );
 
     // Every checkout is started in the same moment, so the server receives them together.
-    const settled = await Promise.allSettled(cartIds.map((cartId) => checkOutCart(customer, cartId)));
+    // Each is a separate attempt, so each has its own key.
+    const settled = await Promise.allSettled(
+      cartIds.map((cartId) => checkOutCart(customer, cartId, newIdempotencyKey())),
+    );
     const outcomes = settled.map((result) =>
       result.status === 'fulfilled' ? placed(result.value) : refusal(result.reason),
     );
@@ -151,38 +148,6 @@ async function prepareCart(customer: CustomerId): Promise<string> {
   const cart = await createCart(customer);
   await setCartLineQuantity(customer, cart.id, SCARCE_PRODUCT, 1);
   return cart.id;
-}
-
-function placed(order: Order): Outcome {
-  return { placed: true, label: 'placed (201)', detail: `order #${order.orderNumber}` };
-}
-
-/** Errors are shown in full: the status, the code, the detail and the request identifier. */
-function refusal(error: unknown): Outcome {
-  if (error instanceof ApiError && error.problem !== undefined) {
-    const { problem } = error;
-    return {
-      placed: false,
-      label: `${error.status} ${problem.code}`,
-      detail: `${problem.detail} (requestId ${problem.requestId})`,
-    };
-  }
-  if (error instanceof ApiError) {
-    return { placed: false, label: `${error.status}`, detail: error.rawBody };
-  }
-  return {
-    placed: false,
-    label: 'not completed',
-    detail: error instanceof Error ? error.message : String(error),
-  };
-}
-
-function countLabels(outcomes: readonly Outcome[]): Array<[string, number]> {
-  const counts = new Map<string, number>();
-  for (const outcome of outcomes) {
-    counts.set(outcome.label, (counts.get(outcome.label) ?? 0) + 1);
-  }
-  return [...counts.entries()];
 }
 
 /** The count typed into the form, kept within the range the race tool supports. */

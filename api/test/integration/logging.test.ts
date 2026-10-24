@@ -65,27 +65,42 @@ describe('checkout outcome logging', () => {
     logger: createLogger({ level: 'info', destination: logs.destination }),
   });
 
-  it('logs a placed checkout once, with its order number, and a refused checkout once, with its code', async () => {
+  it('logs every checkout outcome once, with its code: the placed order, the replay, and the refusal', async () => {
     const cartId = await createCart(database.app, 'alice');
     await setLine(database.app, 'alice', cartId, 'ceramic-mug', 1);
+    const checkoutPath = `/api/carts/${cartId}/checkout`;
     await request(database.app)
-      .post(`/api/carts/${cartId}/checkout`)
+      .post(checkoutPath)
       .set('X-Customer-Id', 'alice')
+      .set('Idempotency-Key', 'outcome-key')
       .set('X-Request-Id', 'outcome-placed-1');
+    await request(database.app)
+      .post(checkoutPath)
+      .set('X-Customer-Id', 'alice')
+      .set('Idempotency-Key', 'outcome-key')
+      .set('X-Request-Id', 'outcome-replayed-1');
 
     const emptyCartId = await createCart(database.app, 'bob');
     await request(database.app)
       .post(`/api/carts/${emptyCartId}/checkout`)
       .set('X-Customer-Id', 'bob')
+      .set('Idempotency-Key', 'outcome-key')
       .set('X-Request-Id', 'outcome-refused-1');
 
-    const placed = logs.entries.filter((entry) => entry.requestId === 'outcome-placed-1');
-    const refused = logs.entries.filter((entry) => entry.requestId === 'outcome-refused-1');
-    expect(placed.filter((entry) => entry.msg === 'checkout placed')).toEqual([
-      expect.objectContaining({ orderNumber: 1 }),
+    const outcomesOf = (requestId: string) =>
+      logs.entries.filter((entry) => entry.requestId === requestId && entry.msg === 'checkout outcome');
+    expect(outcomesOf('outcome-placed-1')).toEqual([
+      expect.objectContaining({ code: 'ORDER_PLACED', status: 201, orderNumber: 1 }),
     ]);
-    expect(refused).toContainEqual(
-      expect.objectContaining({ msg: 'request rejected', code: 'CART_EMPTY', status: 422 }),
-    );
+    expect(outcomesOf('outcome-replayed-1')).toEqual([
+      expect.objectContaining({ code: 'IDEMPOTENT_REPLAY', status: 201, orderNumber: 1 }),
+    ]);
+    expect(outcomesOf('outcome-refused-1')).toEqual([
+      expect.objectContaining({ code: 'CART_EMPTY', status: 422 }),
+    ]);
+    // The refusal is logged once, as the checkout's outcome, not again as a rejected request.
+    expect(
+      logs.entries.filter((entry) => entry.requestId === 'outcome-refused-1' && entry.msg === 'request rejected'),
+    ).toEqual([]);
   });
 });

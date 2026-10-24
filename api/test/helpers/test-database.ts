@@ -38,7 +38,8 @@ export function useTestDatabase(options: { logger?: Logger } = {}): {
 
     const url = new URL(ADMIN_DATABASE_URL);
     url.pathname = `/${databaseName}`;
-    state.pool = new Pool({ connectionString: url.toString(), max: 5 });
+    // Enough connections for ten simultaneous requests to run at once, as the concurrency cases need.
+    state.pool = new Pool({ connectionString: url.toString(), max: 12 });
 
     await bootstrapDatabase(state.pool);
     state.app = createApp({

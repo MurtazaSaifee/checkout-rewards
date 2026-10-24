@@ -1,10 +1,20 @@
+import { randomUUID } from 'node:crypto';
 import request from 'supertest';
 import type { Express } from 'express';
 
 /** Thin wrappers over the checkout and order endpoints. Each returns the raw response so tests can assert on it. */
 
-export function checkOut(app: Express, customerId: string, cartId: string) {
-  return request(app).post(`/api/carts/${cartId}/checkout`).set('X-Customer-Id', customerId);
+/** Checks out a cart. Each call sends a fresh idempotency key unless the test passes one. */
+export function checkOut(
+  app: Express,
+  customerId: string,
+  cartId: string,
+  idempotencyKey: string = randomUUID(),
+) {
+  return request(app)
+    .post(`/api/carts/${cartId}/checkout`)
+    .set('X-Customer-Id', customerId)
+    .set('Idempotency-Key', idempotencyKey);
 }
 
 export function viewOrder(app: Express, customerId: string, orderId: string) {

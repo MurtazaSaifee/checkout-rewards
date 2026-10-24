@@ -115,6 +115,11 @@ check 200 "Removing a line that is already gone succeeds" \
 CAROL=(-H 'X-Customer-Id: example-carol')
 DAN=(-H 'X-Customer-Id: example-dan')
 
+# Every checkout needs an Idempotency-Key, which names one attempt. The keys carry a
+# run identifier, so a later run never reuses a key the first run stored.
+RUN_ID="$(date +%s)$RANDOM"
+idem() { printf 'Idempotency-Key: example-%s-%s' "$RUN_ID" "$1"; }
+
 # Carol's cart: two canvas totes and a notebook set, each at its current price.
 check 201 "Create a cart for carol" -X POST "${CAROL[@]}" "$BASE_URL/carts"
 TOTE_CART="$(printf '%s' "$LAST_BODY" | jq -r '.id')"
@@ -126,18 +131,21 @@ check 200 "Carol adds a notebook set" \
 # Checkout places the order in one transaction and returns it: the order number,
 # each line with the product name and unit price as they are at checkout, and the
 # subtotal and total.
-check 201 "Carol checks out her cart" -X POST "${CAROL[@]}" "$BASE_URL/carts/$TOTE_CART/checkout"
+check 201 "Carol checks out her cart" \
+  -X POST "${CAROL[@]}" -H "$(idem carol-tote)" "$BASE_URL/carts/$TOTE_CART/checkout"
 ORDER_ID="$(printf '%s' "$LAST_BODY" | jq -r '.id')"
 
-# The cart is now checked out, so it cannot be changed or checked out again.
-check 409 "Checking out the same cart again is refused" -X POST "${CAROL[@]}" "$BASE_URL/carts/$TOTE_CART/checkout"
+# The cart is now checked out, so it cannot be changed or checked out again. A new key does not help.
+check 409 "Checking out the same cart again with a new key is refused" \
+  -X POST "${CAROL[@]}" -H "$(idem carol-tote-again)" "$BASE_URL/carts/$TOTE_CART/checkout"
 check 409 "Changing a checked-out cart is refused" \
   -X PUT "${CAROL[@]}" "${JSON_TYPE[@]}" --data '{"quantity":3}' "$BASE_URL/carts/$TOTE_CART/lines/canvas-tote"
 
 # An empty cart has nothing to order.
 check 201 "Create an empty cart for carol" -X POST "${CAROL[@]}" "$BASE_URL/carts"
 EMPTY_CART="$(printf '%s' "$LAST_BODY" | jq -r '.id')"
-check 422 "Checking out an empty cart is refused" -X POST "${CAROL[@]}" "$BASE_URL/carts/$EMPTY_CART/checkout"
+check 422 "Checking out an empty cart is refused" \
+  -X POST "${CAROL[@]}" -H "$(idem carol-empty)" "$BASE_URL/carts/$EMPTY_CART/checkout"
 
 # The order is a snapshot of the checkout, and the stock taken for it is gone from the catalogue.
 check 200 "Carol views her order" -X GET "${CAROL[@]}" "$BASE_URL/orders/$ORDER_ID"
@@ -161,7 +169,52 @@ HOODIE_DAN="$(printf '%s' "$LAST_BODY" | jq -r '.id')"
 check 200 "Dan also sets three hoodies: the line is accepted while stock remains" \
   -X PUT "${DAN[@]}" "${JSON_TYPE[@]}" --data '{"quantity":3}' "$BASE_URL/carts/$HOODIE_DAN/lines/limited-hoodie"
 check 201 "Carol checks out first and takes the three hoodies" \
-  -X POST "${CAROL[@]}" "$BASE_URL/carts/$HOODIE_CAROL/checkout"
+  -X POST "${CAROL[@]}" -H "$(idem hoodie-carol)" "$BASE_URL/carts/$HOODIE_CAROL/checkout"
 check 409 "Dan's checkout is refused, and every short line is listed" \
-  -X POST "${DAN[@]}" "$BASE_URL/carts/$HOODIE_DAN/checkout"
+  -X POST "${DAN[@]}" -H "$(idem hoodie-dan)" "$BASE_URL/carts/$HOODIE_DAN/checkout"
 check 200 "Dan's cart is still open after the refusal" -X GET "${DAN[@]}" "$BASE_URL/carts/$HOODIE_DAN"
+
+# Idempotency. A client that times out can retry a checkout with the same key and
+# the same request, and gets the original answer back, not a second order.
+ERIN=(-H 'X-Customer-Id: example-erin')
+check 201 "Create a cart for erin" -X POST "${ERIN[@]}" "$BASE_URL/carts"
+ERIN_CART="$(printf '%s' "$LAST_BODY" | jq -r '.id')"
+check 200 "Erin sets two notebook sets" \
+  -X PUT "${ERIN[@]}" "${JSON_TYPE[@]}" --data '{"quantity":2}' "$BASE_URL/carts/$ERIN_CART/lines/notebook-set"
+
+# A checkout without the key is refused before the cart is touched.
+check 400 "Checkout without an Idempotency-Key is refused" \
+  -X POST "${ERIN[@]}" "$BASE_URL/carts/$ERIN_CART/checkout"
+
+# The first attempt places the order. The retry, with the same key, returns the same body.
+check 201 "Erin checks out with a key" \
+  -X POST "${ERIN[@]}" -H "$(idem erin-1)" "$BASE_URL/carts/$ERIN_CART/checkout"
+FIRST_BODY="$LAST_BODY"
+check 201 "Retry with the same key: the original order comes back" \
+  -X POST "${ERIN[@]}" -H "$(idem erin-1)" "$BASE_URL/carts/$ERIN_CART/checkout"
+if [[ "$LAST_BODY" != "$FIRST_BODY" ]]; then
+  printf 'The replayed order differs from the original\n' >&2
+  exit 1
+fi
+
+# The same key with a different request is a client bug, so it is refused.
+check 201 "Erin creates a second cart" -X POST "${ERIN[@]}" "$BASE_URL/carts"
+ERIN_SECOND="$(printf '%s' "$LAST_BODY" | jq -r '.id')"
+check 200 "Erin sets a ceramic mug in the second cart" \
+  -X PUT "${ERIN[@]}" "${JSON_TYPE[@]}" --data '{"quantity":1}' "$BASE_URL/carts/$ERIN_SECOND/lines/ceramic-mug"
+check 422 "Reusing the key for another cart is refused" \
+  -X POST "${ERIN[@]}" -H "$(idem erin-1)" "$BASE_URL/carts/$ERIN_SECOND/checkout"
+
+# A new key on the cart that is already checked out is refused: a cart yields at most one order.
+check 409 "A new key on the checked-out cart is refused" \
+  -X POST "${ERIN[@]}" -H "$(idem erin-2)" "$BASE_URL/carts/$ERIN_CART/checkout"
+
+# A refused checkout leaves no record under its key, so the key works again after a fix.
+check 201 "Erin creates a third cart" -X POST "${ERIN[@]}" "$BASE_URL/carts"
+ERIN_THIRD="$(printf '%s' "$LAST_BODY" | jq -r '.id')"
+check 422 "Checking out the empty third cart is refused, with key erin-3" \
+  -X POST "${ERIN[@]}" -H "$(idem erin-3)" "$BASE_URL/carts/$ERIN_THIRD/checkout"
+check 200 "Erin adds a notebook set to the third cart" \
+  -X PUT "${ERIN[@]}" "${JSON_TYPE[@]}" --data '{"quantity":1}' "$BASE_URL/carts/$ERIN_THIRD/lines/notebook-set"
+check 201 "The same key now places the order for the third cart" \
+  -X POST "${ERIN[@]}" -H "$(idem erin-3)" "$BASE_URL/carts/$ERIN_THIRD/checkout"

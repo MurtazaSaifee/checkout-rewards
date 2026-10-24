@@ -3,6 +3,7 @@ import type { Pool } from 'pg';
 import { contractValidator } from './http/contract.js';
 import { requireCustomerIdentity } from './http/customer-identity.js';
 import { problemErrorHandler } from './http/error-handler.js';
+import { requireIdempotencyKey } from './http/idempotency-key.js';
 import { notFoundHandler } from './http/not-found.js';
 import { requestContext } from './http/request-context.js';
 import type { Logger } from './logging.js';
@@ -26,6 +27,8 @@ export function createApp(deps: AppDependencies): Express {
   // Ahead of the contract validator, so a missing customer header gets its own code.
   app.use('/api/carts', requireCustomerIdentity());
   app.use('/api/orders', requireCustomerIdentity());
+  // Checkout requires the key, and this runs ahead of the validator for the same reason.
+  app.post('/api/carts/:cartId/checkout', requireIdempotencyKey());
   app.use(contractValidator());
 
   app.use('/api', productsRouter(deps.db));
