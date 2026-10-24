@@ -159,6 +159,16 @@ A coupon is redeemed only by a placed order. A checkout that fails for any reaso
 
 The web app has a coupon field at checkout, and shows the coupon and discount on the order. Its race tool redeems one of the customer's coupons from several carts at once and summarises the outcomes.
 
+## Admin report and orders
+
+`GET /api/admin/orders` lists every placed order, oldest first, with the customer it belongs to, its lines and its totals. `GET /api/admin/report` summarises the store: orders placed, units sold of each product, gross revenue, discounts, net revenue, coupons generated, redeemed and still available, and milestones reached without a coupon. Both need the admin key, and neither changes anything:
+
+```sh
+curl -H 'X-Admin-Key: local-admin-key' http://localhost:3000/api/admin/report
+```
+
+The report is calculated from the orders and coupons each time it is requested. Nothing is stored, so it reflects the store at the moment it is read, and it agrees with the lists read at that moment. Money is whole cents, and net revenue is gross revenue less discounts. `DECISIONS.md` explains why the report is calculated this way.
+
 ## Errors and request identifiers
 
 Every response carries an `X-Request-Id` header. Send your own identifier to correlate a call with the server logs: it is echoed back if it is 1 to 128 characters of letters, digits, `.`, `_`, `:` or `-`. Otherwise the service generates one.
