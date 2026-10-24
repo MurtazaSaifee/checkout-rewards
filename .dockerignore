@@ -3,8 +3,3 @@
 **/*.tsbuildinfo
 **/schema.gen.ts
 .git
-.claude
-.scratch
-docs
-CLAUDE.md
-GLOSSARY.md
