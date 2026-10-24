@@ -1,0 +1,170 @@
+openapi: 3.0.3
+info:
+  title: Checkout and Rewards API
+  version: 0.1.0
+  description: |
+    Every response carries an `X-Request-Id` header. An error response is an
+    RFC 9457 Problem Details document (`application/problem+json`) with a
+    stable machine-readable `code` and the same `requestId`.
+
+    Money is always an integer number of cents.
+
+    Status rule: 400 malformed request or missing header, 401 missing or wrong
+    admin key, 402 payment declined, 404 resource missing or not visible to the
+    caller, 409 conflicts with current state that may succeed later, 422 well
+    formed but violates a business rule.
+
+    Unknown paths and methods answer 404 `ROUTE_NOT_FOUND` as a Problem
+    Details document; that answer is not repeated per operation below.
+servers:
+  - url: /api
+    description: API base path. Paths below are relative to it.
+tags:
+  - name: products
+    description: Catalogue browsing. Needs no customer identifier.
+  - name: admin
+    description: >-
+      Store administration. Operations with this tag are restricted to the
+      store administrator and require the admin key header.
+paths:
+  /products:
+    get:
+      tags:
+        - products
+      operationId: listProducts
+      summary: List products with current unit price and stock.
+      parameters:
+        - $ref: '#/components/parameters/RequestIdHeader'
+      responses:
+        '200':
+          description: Every product, ordered by id.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProductList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+components:
+  securitySchemes:
+    adminKey:
+      type: apiKey
+      in: header
+      name: X-Admin-Key
+      description: Shared key for the store administrator. Required by every admin operation.
+  parameters:
+    RequestIdHeader:
+      name: X-Request-Id
+      in: header
+      required: false
+      description: >-
+        Optional identifier echoed back in the response and in error bodies.
+        Identifiers that are not 1 to 128 characters of letters, digits, dot,
+        underscore, colon or hyphen are replaced with a generated one.
+      schema:
+        type: string
+  headers:
+    RequestId:
+      description: The request identifier for this exchange.
+      schema:
+        type: string
+  schemas:
+    Product:
+      type: object
+      required:
+        - id
+        - name
+        - unitPriceCents
+        - stock
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+          description: Stable product identifier, used in cart paths.
+          example: ceramic-mug
+        name:
+          type: string
+          example: Ceramic Mug
+        unitPriceCents:
+          type: integer
+          minimum: 0
+          description: Current unit price in cents.
+          example: 1200
+        stock:
+          type: integer
+          minimum: 0
+          description: Units currently available to sell.
+          example: 60
+    ProductList:
+      type: object
+      required:
+        - products
+      additionalProperties: false
+      properties:
+        products:
+          type: array
+          items:
+            $ref: '#/components/schemas/Product'
+    ErrorCode:
+      type: string
+      description: Stable machine-readable error identifier.
+      enum:
+        - VALIDATION_FAILED
+        - MALFORMED_JSON
+        - ROUTE_NOT_FOUND
+        - INTERNAL_ERROR
+    Problem:
+      type: object
+      description: RFC 9457 Problem Details, extended with `code` and `requestId`.
+      required:
+        - type
+        - title
+        - status
+        - detail
+        - code
+        - requestId
+      properties:
+        type:
+          type: string
+          format: uri-reference
+          example: https://checkout-rewards.example/problems/VALIDATION_FAILED
+        title:
+          type: string
+          example: Request validation failed
+        status:
+          type: integer
+          minimum: 400
+          maximum: 599
+          example: 400
+        detail:
+          type: string
+          example: Query parameter "color" is not allowed.
+        code:
+          $ref: '#/components/schemas/ErrorCode'
+        requestId:
+          type: string
+          example: 6f1c2a0e-0b8e-4c53-9a4e-2a8f1d7c9e10
+      additionalProperties: true
+  responses:
+    BadRequest:
+      description: 'Malformed request: bad JSON, unknown or invalid parameters, or a missing required header.'
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/RequestId'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    InternalError:
+      description: Unexpected failure. The request identifier appears in the server log.
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/RequestId'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
