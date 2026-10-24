@@ -91,6 +91,21 @@ export async function upsertCartLine(
   );
 }
 
+/**
+ * Removes a product's line from the cart. Removing a line that is already gone
+ * changes nothing. Runs only inside a transaction that already holds the cart lock.
+ */
+export async function deleteCartLine(
+  client: PoolClient,
+  cartId: string,
+  productId: string,
+): Promise<void> {
+  await client.query('DELETE FROM cart_lines WHERE cart_id = $1 AND product_id = $2', [
+    cartId,
+    productId,
+  ]);
+}
+
 /** The cart's lines with each product's current name and unit price, in product order. */
 export async function selectCartLines(runner: SqlRunner, cartId: string): Promise<CartLineRow[]> {
   const { rows } = await runner.query<CartLineRow>(

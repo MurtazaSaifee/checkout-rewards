@@ -10,6 +10,7 @@ import {
 import {
   type CartHead,
   type CartStatus,
+  deleteCartLine,
   findOwnedCart,
   insertCart,
   lockEditableCart,
@@ -73,6 +74,21 @@ export async function setLineQuantity(db: Pool, input: SetLineQuantityInput): Pr
     }
 
     await upsertCartLine(client, head.id, input.productId, input.quantity);
+    return loadCartView(client, head);
+  });
+}
+
+export interface RemoveLineInput {
+  cartId: string;
+  customerId: string;
+  productId: string;
+}
+
+/** Removes a line under the cart lock and returns the cart. */
+export async function removeCartLine(db: Pool, input: RemoveLineInput): Promise<CartView> {
+  return withTransaction(db, async (client) => {
+    const head = await lockEditableCart(client, input.cartId, input.customerId);
+    await deleteCartLine(client, head.id, input.productId);
     return loadCartView(client, head);
   });
 }

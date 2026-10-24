@@ -1,7 +1,7 @@
 import request from 'supertest';
 import { describe, expect, it } from 'vitest';
 import { useTestDatabase } from '../helpers/test-database.js';
-import { createCart, setLine, viewCart } from '../helpers/cart-api.js';
+import { createCart, removeLine, setLine, viewCart } from '../helpers/cart-api.js';
 import type { Cart, Problem, ProductListing } from '../helpers/api-types.js';
 
 describe('setting a cart line quantity', () => {
@@ -94,6 +94,19 @@ describe('setting a cart line quantity', () => {
       },
     ]);
     expect(cart.subtotalCents).toBe(3800);
+  });
+
+  it('answers a set on a cart that does not exist as not found', async () => {
+    const response = await setLine(
+      database.app,
+      'alice',
+      '0b6f4d1e-7c2a-4f9b-8e3d-5a1c9f0e2b74',
+      'ceramic-mug',
+      1,
+    );
+
+    expect(response.status).toBe(404);
+    expect(response.body).toMatchObject({ status: 404, code: 'CART_NOT_FOUND' });
   });
 
   it('answers a set on another customer\'s cart as not found and changes nothing', async () => {
@@ -197,5 +210,93 @@ describe('setting a cart line quantity', () => {
 
     expect(alice.status).toBe(200);
     expect(bob.status).toBe(200);
+  });
+});
+
+describe('removing a cart line', () => {
+  const database = useTestDatabase();
+
+  it('removes the line and returns the cart without it', async () => {
+    const cartId = await createCart(database.app, 'alice');
+    await setLine(database.app, 'alice', cartId, 'ceramic-mug', 2);
+    await setLine(database.app, 'alice', cartId, 'notebook-set', 1);
+
+    const response = await removeLine(database.app, 'alice', cartId, 'ceramic-mug');
+
+    expect(response.status).toBe(200);
+    expect(response.body as Cart).toEqual({
+      id: cartId,
+      status: 'open',
+      lines: [
+        {
+          productId: 'notebook-set',
+          name: 'Notebook Set',
+          unitPriceCents: 950,
+          quantity: 1,
+          lineAmountCents: 950,
+        },
+      ],
+      lineCount: 1,
+      subtotalCents: 950,
+    });
+  });
+
+  it('succeeds, returning the cart unchanged, when the line is already gone', async () => {
+    const cartId = await createCart(database.app, 'alice');
+    await setLine(database.app, 'alice', cartId, 'ceramic-mug', 2);
+    const first = await removeLine(database.app, 'alice', cartId, 'ceramic-mug');
+
+    const retried = await removeLine(database.app, 'alice', cartId, 'ceramic-mug');
+    const neverAdded = await removeLine(database.app, 'alice', cartId, 'no-such-product');
+
+    expect(retried.status).toBe(200);
+    expect(retried.body).toEqual(first.body);
+    expect(neverAdded.status).toBe(200);
+    expect(neverAdded.body).toEqual(first.body);
+  });
+
+  it("answers a removal from another customer's cart as not found and removes nothing", async () => {
+    const cartId = await createCart(database.app, 'alice');
+    await setLine(database.app, 'alice', cartId, 'ceramic-mug', 2);
+
+    const response = await removeLine(database.app, 'bob', cartId, 'ceramic-mug');
+    const cart = (await viewCart(database.app, 'alice', cartId)).body as Cart;
+
+    expect(response.status).toBe(404);
+    expect(response.body).toMatchObject({ status: 404, code: 'CART_NOT_FOUND' });
+    expect(cart.lines).toEqual([expect.objectContaining({ productId: 'ceramic-mug', quantity: 2 })]);
+  });
+
+  it('answers a removal from a cart that does not exist as not found', async () => {
+    const response = await removeLine(
+      database.app,
+      'alice',
+      '0b6f4d1e-7c2a-4f9b-8e3d-5a1c9f0e2b74',
+      'ceramic-mug',
+    );
+
+    expect(response.status).toBe(404);
+    expect(response.body).toMatchObject({ status: 404, code: 'CART_NOT_FOUND' });
+  });
+
+  it('rejects every change to a checked-out cart with 409 CART_ALREADY_CHECKED_OUT and leaves the cart as it was', async () => {
+    const cartId = await createCart(database.app, 'alice');
+    await setLine(database.app, 'alice', cartId, 'ceramic-mug', 2);
+    // Arrange: mark the cart checked out directly. Checkout itself arrives with the
+    // checkout ticket, which then exercises this path end to end.
+    await database.pool.query(`UPDATE carts SET status = 'checked_out' WHERE id = $1`, [cartId]);
+
+    const set = await setLine(database.app, 'alice', cartId, 'ceramic-mug', 5);
+    const removed = await removeLine(database.app, 'alice', cartId, 'ceramic-mug');
+    const cart = (await viewCart(database.app, 'alice', cartId)).body as Cart;
+
+    expect(set.status).toBe(409);
+    expect(set.body).toMatchObject({ status: 409, code: 'CART_ALREADY_CHECKED_OUT' });
+    expect(removed.status).toBe(409);
+    expect(removed.body).toMatchObject({ status: 409, code: 'CART_ALREADY_CHECKED_OUT' });
+    expect(cart).toMatchObject({
+      status: 'checked_out',
+      lines: [expect.objectContaining({ productId: 'ceramic-mug', quantity: 2 })],
+    });
   });
 });

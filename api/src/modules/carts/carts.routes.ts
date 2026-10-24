@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import type { Pool } from 'pg';
 import { customerIdOf } from '../../http/customer-identity.js';
-import { createCart, setLineQuantity, viewCart } from './carts.service.js';
+import { createCart, removeCartLine, setLineQuantity, viewCart } from './carts.service.js';
 
 /** The request body after the contract has validated it against SetLineQuantity. */
 interface SetLineQuantityBody {
@@ -28,6 +28,15 @@ export function cartsRouter(db: Pool): Router {
       customerId: customerIdOf(req),
       productId: req.params.productId,
       quantity,
+    });
+    res.json(cart);
+  });
+
+  router.delete('/carts/:cartId/lines/:productId', async (req, res) => {
+    const cart = await removeCartLine(db, {
+      cartId: req.params.cartId,
+      customerId: customerIdOf(req),
+      productId: req.params.productId,
     });
     res.json(cart);
   });
