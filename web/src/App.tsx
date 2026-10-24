@@ -2,6 +2,7 @@ import { useCallback, useState } from 'react';
 import type { Order } from './api/client';
 import { AdminPanel } from './AdminPanel';
 import { CartPanel } from './CartPanel';
+import { CouponRaceTool } from './CouponRaceTool';
 import { CouponsPanel } from './CouponsPanel';
 import { CustomerSwitcher } from './CustomerSwitcher';
 import { type CustomerId, loadCustomer, saveCustomer } from './customer';
@@ -77,9 +78,11 @@ function CustomerWorkspace({ customer, couponsVersion }: { customer: CustomerId;
         onSelect={setSelectedOrderId}
       />
       <OrderView customer={customer} orderId={selectedOrderId} />
-      <CouponsPanel customer={customer} version={couponsVersion} />
+      {/* A coupon issue and a placed order both change the list, so either one reads it again. */}
+      <CouponsPanel customer={customer} version={couponsVersion + ordersVersion} />
       <RaceTool customer={customer} onFinished={refreshAfterOrders} />
       <RetryRace customer={customer} onFinished={refreshAfterOrders} />
+      <CouponRaceTool customer={customer} onFinished={refreshAfterOrders} />
     </>
   );
 }
