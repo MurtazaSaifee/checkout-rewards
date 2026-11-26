@@ -308,7 +308,7 @@ These are places where I corrected, rejected or redirected what the assistant pr
 6. **Migration ordering.** Two pieces of work built in parallel each added a migration numbered `0004`. Both would have run, but in a misleading order; the coupons migration was renumbered `0005`.
 7. **Error paths found in review.** A final review found that a failing `ROLLBACK` would hide the original error and return a broken connection to the pool, and that an idle-connection error could crash the process. Both were fixed with tests.
 
-## What to examine first with two more hours
+## Future improvements
 
 1. **Interleavings.** The retry test in `checkout-idempotency.test.ts` holds a cart row lock from a test connection, sends a retry that must wait on it, releases the lock, and checks that the waiting retry gets the first attempt's response. Extend that technique to the coupon lock, where a second checkout that names the coupon waits for the first to commit, and to the cart-edit-versus-checkout path, where an edit waits for a checkout. The other concurrency tests sample overlap with `Promise.all`, which makes overlap likely but does not choose the order. These tests would check the READ COMMITTED reasoning directly.
 2. **Two-phase payment.** The charge runs while the cart and stock locks are held. Separating the pending order from the payment removes that, and it is the change with the largest effect on throughput.

@@ -1,10 +1,27 @@
 # Checkout and Rewards
 
 [![CI](https://github.com/MurtazaSaifee/checkout-rewards/actions/workflows/ci.yml/badge.svg)](https://github.com/MurtazaSaifee/checkout-rewards/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 A backend for an ecommerce store where customers keep carts and check out, and every nth placed order earns the customer who placed it a single-use discount coupon. The service is a TypeScript API on Postgres, with a small React app for trying it by hand.
 
 The API serves the product listing, customers' carts, checkout with order viewing, and coupons. `api/openapi.yaml` is the authoritative description of every endpoint, status code and error code.
+
+![Storefront, active cart, and checkout controls](docs/screenshots/store-checkout.png)
+
+## Engineering highlights
+
+- **Single-transaction checkout & row locking:** `POST /api/carts/:cartId/checkout` locks the cart, prices items at current DB unit prices, deducts stock via conditional updates, claims an `nth`-order milestone, and records the order atomically (`409` on `PRICE_CHANGED` or `INSUFFICIENT_STOCK` rolls back completely).
+- **Database-backed idempotency & request fingerprinting:** Checkout claims `Idempotency-Key` in PostgreSQL with a SHA-256 request fingerprint, replaying exact bytes on identical retries and returning `IDEMPOTENCY_KEY_REUSED` on mismatched payloads, while leaving failed attempts uncached so carts can be fixed and retried.
+- **Strict OpenAPI contract & type generation:** `api/openapi.yaml` drives runtime request/response validation (`express-openapi-validator`) and auto-generates the React client's TypeScript types (`openapi-typescript`).
+- **Concurrency & race verification:** 67 unit tests and 142 real-Postgres integration tests verify simultaneous stock races, idempotency lock contention, and single-use coupon redemption races, paired with interactive race triggers in the companion UI.
+
+<details>
+<summary>Screenshot: interactive concurrency race tools and admin controls</summary>
+
+![Interactive concurrency race tools showing idempotency retry results and admin controls](docs/screenshots/concurrency-tools.png)
+
+</details>
 
 ## Scope and limits
 
@@ -21,10 +38,6 @@ These are not built:
 - Frontend tests and visual polish, multiple currencies, and taxes.
 
 Known gaps in the current code are listed in `DECISIONS.md` until they are fixed.
-
-## Time spent
-
-About six hours in total, approximately: about 1.5 hours of planning (08:30 to about 10:00 IST), about 2.5 hours of implementation (10:00 to about 12:30 IST, each change reviewed and tested before it was merged), and about two hours on a final review, the fixes it found, and end-to-end checks. Times are local, on 24 October 2026.
 
 ## Quick start
 
